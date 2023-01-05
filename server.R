@@ -12,6 +12,7 @@ library(shinyjs)
 library(shiny)
 library(DT)
 library(zoo)
+library(leaflet)
 
 con <- dbConnect(SQLite(), "data/strava.db")
 ACTIVITY_TYPES <- tbl(con, "activity_types") |>
@@ -29,32 +30,35 @@ calculate_hrss <- function(hr, ts, HRmax=190, HRrest=55, LTHR=170, k=1.92) {
    hrss * 100
 }
 
+# Creates an activity_type_select_<keyword> checkboxgroup
+create_activity_type_checkbox <- function(keyword) {
+    checkboxGroupInput(sprintf("activity_type_select_%s", keyword),
+                       "Activity Type",
+                       ACTIVITY_TYPES,
+                       selected="Run")
+}
+
 function(input, output, session) {
     
     output$activity_type_table <- renderUI({
-        checkboxGroupInput("activity_table_type_select",
-                           "Activity Type",
-                           ACTIVITY_TYPES,
-                           selected="Run")
+        create_activity_type_checkbox("table")
     })
     
     output$activity_type_mileage <- renderUI({
-        checkboxGroupInput("activity_mileage_type_select",
-                           "Activity Type",
-                           ACTIVITY_TYPES,
-                           selected="Run")
+        create_activity_type_checkbox("mileage")
     })
 
     output$activity_type_fitness <- renderUI({
-        checkboxGroupInput("activity_fitness_type_select",
-                           "Activity Type",
-                           ACTIVITY_TYPES,
-                           selected="Run")
+        create_activity_type_checkbox("fitness")
+    })
+    
+    output$activity_type_routes <- renderUI({
+        create_activity_type_checkbox("routes")
     })
     
     output$activities <- renderDT({
-        req(input$activity_table_type_select)
-        types <- input$activity_table_type_select
+        req(input$activity_type_select_table)
+        types <- input$activity_type_select_table
         tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             collect() |>
@@ -80,8 +84,8 @@ function(input, output, session) {
     })
     
     mileage_df <- reactive({
-        req(input$activity_mileage_type_select)
-        types <- input$activity_mileage_type_select
+        req(input$activity_type_select_mileage)
+        types <- input$activity_type_select_mileage
         tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             collect() |>
@@ -93,8 +97,8 @@ function(input, output, session) {
     })
     
     hrss <- reactive({
-        req(input$activity_fitness_type_select)
-        types <- input$activity_fitness_type_select
+        req(input$activity_type_select_fitness)
+        types <- input$activity_type_select_fitness
         fit_data <- tbl(con, "heartrate") |>
                         inner_join(tbl(con, "activities"), by="activity_id") |>
                         filter(activity_type %in% types) |>
@@ -246,7 +250,11 @@ function(input, output, session) {
                 scale_fill_viridis_d("") +
                 scale_colour_viridis_d("") +
                 theme(legend.position = "bottom")
-        
+    })
+    
+    output$routes <- renderLeaflet({
+        leaflet() |>
+            addTiles()
     })
 }
 

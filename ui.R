@@ -3,6 +3,7 @@ library(shinyjs)
 library(shinydashboard)
 library(shinycssloaders)
 library(DT)
+library(leaflet)
 
 dashboardPage(
     dashboardHeader(title="StravaR"),
@@ -58,7 +59,15 @@ dashboardPage(
                     )
             ),
             tabItem(tabName = "routes",
-                    h2("Widgets tab content")
+                    h2("Widgets tab content"),
+                    uiOutput("activity_type_routes"),
+                    fluidRow(
+                        box(title="Routes",
+                            withSpinner(leafletOutput("routes")),
+                            status="success",
+                            solidHeader = TRUE,
+                            width=12)
+                    )
             )
         )
     ),
