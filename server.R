@@ -83,8 +83,7 @@ function(input, output, session) {
            )
     })
     
-    mileage_df <- reactive({
-        req(input$activity_type_select_mileage)
+    mileage_df <- eventReactive(input$activity_type_select_mileage, {
         types <- input$activity_type_select_mileage
         tbl(con, "activities") |>
             filter(activity_type %in% types) |>
@@ -96,8 +95,7 @@ function(input, output, session) {
             ungroup()
     })
     
-    hrss <- reactive({
-        req(input$activity_type_select_fitness)
+    hrss <- eventReactive(input$activity_type_select_fitness, {
         types <- input$activity_type_select_fitness
         fit_data <- tbl(con, "heartrate") |>
                         inner_join(tbl(con, "activities"), by="activity_id") |>
@@ -138,7 +136,6 @@ function(input, output, session) {
     })
     
     output$mileage_cumulative <- renderPlot({
-        req(mileage_df())
         mileage_df() |>
             mutate(year = year(date),
                    date = as_datetime(sprintf("2000-%d-%d", month(date), day(date)))) %>%
@@ -169,7 +166,6 @@ function(input, output, session) {
     })
     
     output$mileage_weekly <- renderPlot({
-        req(mileage_df)
         df <- mileage_df()
         all_dates <- tibble(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
         df <- merge(df, all_dates, on='date', all.y=TRUE)
@@ -205,7 +201,6 @@ function(input, output, session) {
     })
     
     output$training <- renderPlot({
-        req(hrss())
         df <- hrss()
         x_buffer_days <- 80
         bands <- data.frame(
