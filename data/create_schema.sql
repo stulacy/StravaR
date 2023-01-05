@@ -35,9 +35,9 @@ CREATE TABLE location (
 
 CREATE TABLE athlete (
   athelete_id INTEGER PRIMARY KEY,
+  height REAL,
+  weight REAL,
   maxHR REAL,
   restHR REAL,
-  ltHR REAL
+  thresholdHR REAL
 );
-
-INSERT INTO athlete VALUES(1, 190, 55, 170);
