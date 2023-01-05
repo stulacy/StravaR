@@ -1,4 +1,7 @@
-data/
+data/clean
+data/raw
+data/extracts
+*.db
 *.Rproj
 .Rproj.user/
 plots/
