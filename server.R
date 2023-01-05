@@ -20,7 +20,7 @@ ACTIVITY_TYPES <- tbl(con, "activity_types") |>
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
 
-calculate_hrss <- function(hr, ts, HRmax=190, HRrest=55, LTHR=170, k=1.92) {
+calculate_hrss <- function(hr, ts, HRmax, HRrest, LTHR, k=1.92) {
    hrr <- (hr - HRrest) / (HRmax - HRrest) 
    times_diff_min <- c(0, diff(ts)) / 60
    trimp_activity <- sum(times_diff_min * hrr * 0.64 * exp(k * hrr))
@@ -105,8 +105,17 @@ function(input, output, session) {
                                date = as_date(time)) |>
                         setDT()
         # Calculate HRSS per activity
-        # TODO use athlete's stats
-        hrss <- fit_data[, .(hrss = calculate_hrss(heartrate, time)), by=.(date, activity_id)]
+        # Assume only one athlete
+        athlete_hr <- tbl(con, "athlete") |>
+            select(maxHR, restHR, thresholdHR) |>
+            head(1) |>
+            collect()
+        hrss <- fit_data[, .(hrss = calculate_hrss(heartrate,
+                                                   time,
+                                                   athlete_hr$maxHR,
+                                                   athlete_hr$restHR,
+                                                   athlete_hr$thresholdHR,
+                                                   )), by=.(date, activity_id)]
         # Summarise per date
         hrss <- hrss[, .(hrss = sum(hrss)), by=date][order(date)]
         # Make entry for every day as need to run equation everyday as time isn't
