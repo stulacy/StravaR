@@ -1,6 +1,7 @@
 library(shiny)
 library(shinyjs)
 library(shinydashboard)
+library(shinycssloaders)
 library(DT)
 
 dashboardPage(
@@ -21,7 +22,7 @@ dashboardPage(
                     fluidRow(
                         box(title = "Activities",
                             uiOutput("activity_type_table"),
-                            DTOutput("activities"),
+                            withSpinner(DTOutput("activities")),
                             solidHeader = TRUE,
                             width=12,
                             status="success")
@@ -32,13 +33,13 @@ dashboardPage(
                     uiOutput("activity_type_mileage"),
                     fluidRow(
                         box(title="Yearly mileage",
-                            plotOutput("mileage_cumulative"),
+                            withSpinner(plotOutput("mileage_cumulative")),
                             solidHeader=TRUE,
                             status="success",
                             width=6
                         ),
                         box(title="Rolling mileage",
-                            plotOutput("mileage_weekly"),
+                            withSpinner(plotOutput("mileage_weekly")),
                             solidHeader=TRUE,
                             status="success",
                             width=6
@@ -50,7 +51,7 @@ dashboardPage(
                     uiOutput("activity_type_fitness"),
                     fluidRow(
                         box(title="Training status",
-                            plotOutput("training"),
+                            withSpinner(plotOutput("training")),
                             status="success",
                             solidHeader = TRUE,
                             width=12)

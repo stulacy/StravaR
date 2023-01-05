@@ -250,7 +250,8 @@ function(input, output, session) {
     })
 }
 
-# TODO Validate input in activities table, mileage both plots, fitness plot
-# TODO add spinners
-# TODO cache York map as part of extract_all_strava.sh (i.e. an R script that simply downloads the map)
 # TODO add route plots
+# TODO add route gifs
+# TODO plotly
+# TODO icons
+# TODO clean up
