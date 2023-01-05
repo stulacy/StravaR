@@ -1,0 +1,4 @@
+data/
+*.Rproj
+.Rproj.user/
+plots/
