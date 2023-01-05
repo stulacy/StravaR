@@ -3,6 +3,7 @@ data/raw
 *.zip
 *.tar.gz
 *.tar.xz
+*.gz
 *.rds
 *.db
 *.Rproj

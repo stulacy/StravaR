@@ -7,10 +7,10 @@
         "thresholdHR": null
     },
     "map": {
-        "xmin": -1.169865,
-        "xmax": -0.995778,
-        "ymin": 53.884270,
-        "ymax": 54.005921,
+        "xmin": null,
+        "xmax": null,
+        "ymin": null,
+        "ymax": null,
         "padding": 0.1,
         "osmlayers": {
             "land": {
