@@ -32,22 +32,31 @@ calculate_hrss <- function(hr, ts, HRmax=190, HRrest=55, LTHR=170, k=1.92) {
 function(input, output, session) {
     
     output$activity_type_table <- renderUI({
-        radioButtons("activity_table_type_select", 
-                     "Activity Type",
-                     ACTIVITY_TYPES,
-                     selected="Run")
+        checkboxGroupInput("activity_table_type_select",
+                           "Activity Type",
+                           ACTIVITY_TYPES,
+                           selected="Run")
     })
     
     output$activity_type_mileage <- renderUI({
-        radioButtons("activity_mileage_type_select", 
-                     "Activity Type",
-                     ACTIVITY_TYPES,
-                     selected="Run")
+        checkboxGroupInput("activity_mileage_type_select",
+                           "Activity Type",
+                           ACTIVITY_TYPES,
+                           selected="Run")
+    })
+
+    output$activity_type_fitness <- renderUI({
+        checkboxGroupInput("activity_fitness_type_select",
+                           "Activity Type",
+                           ACTIVITY_TYPES,
+                           selected="Run")
     })
     
     output$activities <- renderDT({
+        req(input$activity_table_type_select)
+        types <- input$activity_table_type_select
         tbl(con, "activities") |>
-            filter(activity_type == local(input$activity_table_type_select)) |>
+            filter(activity_type %in% types) |>
             collect() |>
             mutate(start_time = as_datetime(start_time),
                    Date = as_date(start_time),
@@ -62,6 +71,7 @@ function(input, output, session) {
             
             select(
                 Date,
+                Type=activity_type,
                 Name=name,
                 `Distance (km)`=distance,
                 Duration=dur_fmt,
@@ -70,9 +80,10 @@ function(input, output, session) {
     })
     
     mileage_df <- reactive({
-        type <- input$activity_mileage_type_select
+        req(input$activity_mileage_type_select)
+        types <- input$activity_mileage_type_select
         tbl(con, "activities") |>
-            filter(activity_type == type) |>
+            filter(activity_type %in% types) |>
             collect() |>
             mutate(time = as_datetime(start_time),
                    date = as_date(time)) |>
@@ -82,12 +93,17 @@ function(input, output, session) {
     })
     
     hrss <- reactive({
+        req(input$activity_fitness_type_select)
+        types <- input$activity_fitness_type_select
         fit_data <- tbl(con, "heartrate") |>
+                        inner_join(tbl(con, "activities"), by="activity_id") |>
+                        filter(activity_type %in% types) |>
                         collect() |>
                         mutate(time = as_datetime(time),
                                date = as_date(time)) |>
                         setDT()
         # Calculate HRSS per activity
+        # TODO use athlete's stats
         hrss <- fit_data[, .(hrss = calculate_hrss(heartrate, time)), by=.(date, activity_id)]
         # Summarise per date
         hrss <- hrss[, .(hrss = sum(hrss)), by=date][order(date)]
@@ -118,6 +134,7 @@ function(input, output, session) {
     })
     
     output$mileage_cumulative <- renderPlot({
+        req(mileage_df())
         mileage_df() |>
             mutate(year = year(date),
                    date = as_datetime(sprintf("2000-%d-%d", month(date), day(date)))) %>%
@@ -148,6 +165,7 @@ function(input, output, session) {
     })
     
     output$mileage_weekly <- renderPlot({
+        req(mileage_df)
         df <- mileage_df()
         all_dates <- tibble(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
         df <- merge(df, all_dates, on='date', all.y=TRUE)
@@ -183,6 +201,7 @@ function(input, output, session) {
     })
     
     output$training <- renderPlot({
+        req(hrss())
         df <- hrss()
         x_buffer_days <- 80
         bands <- data.frame(
