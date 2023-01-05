@@ -7,17 +7,19 @@ library(RSQLite)
 library(jsonlite)
 
 args <- commandArgs(trailingOnly=TRUE)
-if (length(args) != 3) {
-    stop(sprintf("%d arguments provided, only provide 2: the database name, the path to the extracted CSVs, and the config filepath",
+if (length(args) != 5) {
+    stop(sprintf("%d arguments provided, please provide 5: DB path, config path, activities.csv path, clean GPX CSV dir, clean Fit CSV dir",
                  length(args)))
 }
 db_fn <- args[1]
-clean_dir <- args[2]
-config_fn <- args[3]
+config_fn <- args[2]
+activities_fn <- args[3]
+gpx_dir <- args[4]
+fit_dir <- args[5]
 
 ############### Load data
 # Load all activities
-all_activities <- fread(sprintf("%s/activities.csv", clean_dir))
+all_activities <- fread(activities_fn)
 all_activities <- all_activities[, .(activity_type=`Activity Type`, 
                                      activity_id = gsub("\\..+", "", basename(Filename)), 
                                      name = `Activity Name`,
@@ -27,7 +29,6 @@ all_activities <- all_activities[, .(activity_type=`Activity Type`,
                                      elevation = `Elevation Gain`)]
 
 # Load GPX data (only has GPS)
-gpx_dir <- sprintf("%s/from_gpx/", clean_dir)
 gpx_fns <- list.files(gpx_dir, full.names = TRUE)
 gpx_cols <- c('Date', 'Time', 'Latitude', 'Longitude')
 gpx_data <- rbindlist(lapply(setNames(gpx_fns, gpx_fns), fread, select=gpx_cols, fill=TRUE), 
@@ -41,8 +42,7 @@ setnames(gpx_data, old=c('Latitude', 'Longitude'), new=c('lat', 'lon'))
 setcolorder(gpx_data, c('activity_id', 'time', 'lat', 'lon'))
 
 # Load FIT data
-fit_dir <- sprintf("%s/from_fit/", clean_dir)
-fit_fns <- paste0(fit_dir, "/", list.files(fit_dir))
+fit_fns <- list.files(fit_dir, full.names = TRUE)
 fit_cols <- c("record.timestamp[s]",
               "record.heart_rate[bpm]",
               "record.position_lat[semicircles]",

@@ -1,6 +1,9 @@
 data/clean
 data/raw
-data/extracts
+*.zip
+*.tar.gz
+*.tar.xz
+*.rds
 *.db
 *.Rproj
 .Rproj.user/
