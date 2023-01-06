@@ -21,12 +21,16 @@ dashboardPage(
             tabItem(tabName = "data",
                     h2("Activities"),
                     fluidRow(
-                        box(title = "Activities",
-                            uiOutput("activity_type_table"),
-                            withSpinner(DTOutput("activities")),
-                            solidHeader = TRUE,
-                            width=12,
-                            status="success")
+                        column(
+                            box(title = "Activities",
+                                uiOutput("activity_type_table"),
+                                withSpinner(DTOutput("activities")),
+                                solidHeader = TRUE,
+                                width=8,
+                                status="success"),
+                            width=12, 
+                            offset=2
+                        )
                     )
             ),
             tabItem(tabName = "mileage",
@@ -62,11 +66,15 @@ dashboardPage(
                     h2("Widgets tab content"),
                     uiOutput("activity_type_routes"),
                     fluidRow(
-                        box(title="Routes",
-                            withSpinner(leafletOutput("routes")),
-                            status="success",
-                            solidHeader = TRUE,
-                            width=12)
+                        column(
+                            box(title="Routes",
+                                withSpinner(leafletOutput("routes")),
+                                status="success",
+                                solidHeader = TRUE,
+                                width=6),
+                            width=12,
+                            offset=3
+                        )
                     )
             )
         )

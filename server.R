@@ -13,6 +13,7 @@ library(shiny)
 library(DT)
 library(zoo)
 library(leaflet)
+library(sf)
 
 con <- dbConnect(SQLite(), "data/strava.db")
 ACTIVITY_TYPES <- tbl(con, "activity_types") |>
@@ -144,6 +145,18 @@ function(input, output, session) {
         hrss
     })
     
+    routes_df <- eventReactive(input$activity_type_select_routes, {
+        types <- input$activity_type_select_routes
+        tbl(con, "activities") |>
+            filter(activity_type %in% types) |>
+            inner_join(tbl(con, "location"), by="activity_id") |>
+            select(activity_id, name, time, lat, lon) |>
+            collect() |>
+            mutate(time = as_datetime(time),
+                   date = as_date(time)) |>
+            arrange(time)
+    })
+    
     output$mileage_cumulative <- renderPlot({
         mileage_df() |>
             mutate(year = year(date),
@@ -257,8 +270,22 @@ function(input, output, session) {
     })
     
     output$routes <- renderLeaflet({
-        leaflet() |>
-            addTiles()
+        df <- routes_df()
+        df_sf <- df |> 
+            arrange(time) |>
+            group_by(activity_id, name, date) |>
+            nest() |>
+            mutate(line = map(data, function(x) st_linestring(as.matrix(x |> select(lon, lat))))) |>
+            select(-data) |>
+            ungroup() |>
+            st_sf(crs = "EPSG:4326") |>
+            mutate(label = sprintf("%s - %s", name, date))
+        
+        df_sf |>
+            leaflet() |>
+            addTiles() |>
+            addPolylines(label=df_sf$label,
+                         color="steelblue")
     })
 }
 
