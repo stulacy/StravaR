@@ -4,15 +4,16 @@ library(shinydashboard)
 library(shinycssloaders)
 library(DT)
 library(leaflet)
+library(plotly)
 
 dashboardPage(
     dashboardHeader(title="StravaR"),
     dashboardSidebar(
         sidebarMenu(
             menuItem("Activities", tabName = "data", icon = icon("dashboard")),
-            menuItem("Mileage", tabName = "mileage", icon = icon("th")),
-            menuItem("Fitness", tabName = "fitness", icon = icon("th")),
-            menuItem("Routes", tabName = "routes", icon = icon("th"))
+            menuItem("Mileage", tabName = "mileage", icon = icon("chart-line")),
+            menuItem("Training", tabName = "fitness", icon = icon("heart")),
+            menuItem("Routes", tabName = "routes", icon = icon("map"))
         )
     ),
     dashboardBody(
@@ -38,13 +39,13 @@ dashboardPage(
                     uiOutput("activity_type_mileage"),
                     fluidRow(
                         box(title="Yearly mileage",
-                            withSpinner(plotOutput("mileage_cumulative")),
+                            withSpinner(plotlyOutput("mileage_cumulative")),
                             solidHeader=TRUE,
                             status="success",
                             width=6
                         ),
                         box(title="Rolling mileage",
-                            withSpinner(plotOutput("mileage_weekly")),
+                            withSpinner(plotlyOutput("mileage_weekly")),
                             solidHeader=TRUE,
                             status="success",
                             width=6

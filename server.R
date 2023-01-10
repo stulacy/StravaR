@@ -14,6 +14,7 @@ library(DT)
 library(zoo)
 library(leaflet)
 library(sf)
+library(plotly)
 
 con <- dbConnect(SQLite(), "data/strava.db")
 ACTIVITY_TYPES <- tbl(con, "activity_types") |>
@@ -157,37 +158,53 @@ function(input, output, session) {
             arrange(time)
     })
     
-    output$mileage_cumulative <- renderPlot({
-        mileage_df() |>
-            mutate(year = year(date),
-                   date = as_datetime(sprintf("2000-%d-%d", month(date), day(date)))) %>%
-            group_by(year) %>%
-            arrange(date) %>%
-            mutate(cumdist = cumsum(distance),
-                   label = ifelse(date == max(date), as.character(year), NA_character_)) %>%
-            ungroup() |>
-            ggplot(aes(x=date, y=cumdist)) +
-                geom_line(aes(colour=as.factor(year))) +
-                geom_text_repel(aes(label = label,
-                                     colour=as.factor(year)),
-                                 nudge_x = 60*60*24*10,
-                                 nudge_y=0,
-                                 na.rm = TRUE) +
-                theme_bw() +
-                scale_colour_manual("", values=RColorBrewer::brewer.pal(N_YEARS, 'Set1')) +
-                guides(shape="none", colour="none") +
-                scale_x_datetime(date_labels="%d %b") +
-                labs(x="", y="Cumulative distance (km)") +
-                theme(legend.position="bottom",
-                      axis.text = element_text(size=10),
-                      legend.text = element_text(size=12),
-                      axis.title = element_text(size=14),
-                      plot.title = element_text(size=16),
-                      panel.grid.minor.x = element_blank()
-                )
+    output$mileage_cumulative <- renderPlotly({
+        df2 <- mileage_df() |>
+            mutate(Year = as.factor(year(date)),
+                   Date = as_datetime(sprintf("2000-%d-%d", month(date), day(date)))) %>%
+            group_by(Year) %>%
+            arrange(Date) %>%
+            mutate(Distance = cumsum(distance),
+                   label = ifelse(Date == max(Date), as.character(Year), NA_character_)) %>%
+            ungroup() 
+        
+        for (group in unique(df2$Year)) {
+            p <- p |> add_lines(y=~Distance, 
+                                name=group, 
+                                text=group,
+                                data=df2 |> filter(Year == group),
+                                showlegend=F,
+                                hovertemplate=paste("Year: %{text}<br>",
+                                                    "Distance: %{y:.0f}km<br>",
+                                                    "Date: %{x|%b %d}<extra></extra>"))# |>
+        }
+        
+        # Get coordinates of last point for each line and add text
+        foo <- jsonlite::parse_json(plotly_json(p, jsonedit=FALSE))
+        for (i in 1:length(foo$data)) {
+            n_points <- length(foo$data[[i]]$x)
+            sub_df <- tibble(
+                last_y = foo$data[[i]]$y[[n_points]],
+                Date = as_datetime(foo$data[[i]]$x[[n_points]]) + days(12)
+            )
+            col <- foo$data[[i]]$line$color
+            this_year <- foo$data[[i]]$text[[1]]
+            p <- p |> add_trace(y=~last_y,
+                                name=this_year,
+                                text=this_year,
+                                type="scatter",
+                                textfont=list(color=col, size=14),
+                                mode="marker+text",
+                                data=sub_df,
+                                showlegend=F)
+        }
+        
+        ggplotly(p, tooltip=c('colour', 'x', 'y')) |>
+            layout(yaxis = list(hoverformat = '.5f'),
+                   xaxis = list(title=""))
     })
     
-    output$mileage_weekly <- renderPlot({
+    output$mileage_weekly <- renderPlotly({
         df <- mileage_df()
         all_dates <- tibble(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
         df <- merge(df, all_dates, on='date', all.y=TRUE)
@@ -195,31 +212,33 @@ function(input, output, session) {
         weeklyrate <- zoo::rollsum(zoo(df$distance, df$date), 7, fill=NA)
         value <- zoo::rollmean(zoo(weeklyrate, df$date), 7, fill=NA)
         
-        df <- as.data.frame(value)
-        df$date <- as_datetime(row.names(df))
+        df <- tibble(`Rolling weekly mileage`=value,
+                     Date=as_datetime(df$date))
         
-        years <- unique(year(df$date))
+        # Generate alternate shaded years
+        years <- unique(year(df$Date))
         start <- as_datetime(sapply(years, function(x) sprintf("%d-01-01", x)))
         end <- as_datetime(sapply(years, function(x) sprintf("%d-12-31", x)))
         ribbons <- tibble(year=years, start=start, end=end,
-                          ymin=0, ymax=125) |>
+                          ymin=0, ymax=1.10*max(value, na.rm=T)) |>
             mutate(shaded = year %% 2 == 0)
         # Replace the first date with the first actual date I ran
-        ribbons$start[1] <- min(df$date)
+        ribbons$start[1] <- min(df$Date)
         
-        df %>%
-            ggplot(aes(x=date, y=value)) +
-                geom_line(na.rm=T) +
+        p <- df %>%
+            ggplot(aes(x=Date, y=`Rolling weekly mileage`)) +
                 theme_bw() +
                 geom_rect(aes(x=start, y=ymax, xmin=start, xmax=end, ymin=ymin, ymax=ymax,
                               alpha=as.factor(shaded)),
                           data=ribbons) +
+                geom_line(na.rm=T) +
                 scale_x_datetime(date_labels="%b %y",
                                  date_breaks = "3 months") + 
                 scale_alpha_manual(values=c(0, 0.2)) +
                 guides(alpha="none") +
                 labs(x="", y="7-day rolling average distance (km)")
-        
+        ggplotly(p, tooltip=c('x', 'y')) |>
+            layout( yaxis = list(hoverformat = '.0f'))
     })
     
     output$training <- renderPlot({
@@ -289,8 +308,9 @@ function(input, output, session) {
     })
 }
 
-# TODO add route plots
-# TODO add route gifs
 # TODO plotly
+#  - get weekly geom_rect in more native plotly
 # TODO icons
+# TODO add badges (i.e. xKm in last week + month + year), or current training status
+# TODO pbs?
 # TODO clean up
