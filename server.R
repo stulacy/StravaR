@@ -168,6 +168,7 @@ function(input, output, session) {
                    label = ifelse(Date == max(Date), as.character(Year), NA_character_)) %>%
             ungroup() 
         
+        p <- plot_ly(x=~Date)
         for (group in unique(df2$Year)) {
             p <- p |> add_lines(y=~Distance, 
                                 name=group, 
@@ -212,7 +213,7 @@ function(input, output, session) {
         weeklyrate <- zoo::rollsum(zoo(df$distance, df$date), 7, fill=NA)
         value <- zoo::rollmean(zoo(weeklyrate, df$date), 7, fill=NA)
         
-        df <- tibble(`Rolling weekly mileage`=value,
+        df <- tibble(mileage=value,
                      Date=as_datetime(df$date))
         
         # Generate alternate shaded years
@@ -225,20 +226,36 @@ function(input, output, session) {
         # Replace the first date with the first actual date I ran
         ribbons$start[1] <- min(df$Date)
         
-        p <- df %>%
-            ggplot(aes(x=Date, y=`Rolling weekly mileage`)) +
-                theme_bw() +
-                geom_rect(aes(x=start, y=ymax, xmin=start, xmax=end, ymin=ymin, ymax=ymax,
-                              alpha=as.factor(shaded)),
-                          data=ribbons) +
-                geom_line(na.rm=T) +
-                scale_x_datetime(date_labels="%b %y",
-                                 date_breaks = "3 months") + 
-                scale_alpha_manual(values=c(0, 0.2)) +
-                guides(alpha="none") +
-                labs(x="", y="7-day rolling average distance (km)")
+        p <- plot_ly(x=~Date,
+                     y=~mileage,
+                     data=df,
+                     type="scatter",
+                     mode="lines",
+                     showlegend=F,
+                     hovertemplate=paste("Date: %{x|%b %d %Y}<extra></extra><br>",
+                                         "Weekly mileage: %{y:.0f}km"))
+        
+        # Add alternate year shading
+        rectangles <- vector(mode="list", length=nrow(ribbons)) 
+        for (i in 1:nrow(ribbons)) {
+            rectangles[[i]] <- list(
+                type="rect",
+                fillcolor="#d2d2d2",
+                line=list(color="#d2d2d2"),
+                opacity=if (i %% 2 == 0) 0 else 0.3,
+                x0=ribbons$start[i],
+                x1=ribbons$end[i],
+                y0=ribbons$ymin[i],
+                y1=ribbons$ymax[i]
+            )
+        }
         ggplotly(p, tooltip=c('x', 'y')) |>
-            layout( yaxis = list(hoverformat = '.0f'))
+            layout( yaxis = list(title="7-day rolling average of weekly distance", 
+                                 hoverformat = '.0f'),
+                    xaxis = list(title="",
+                                 range=c(today() - months(1),
+                                         today())),
+                    shapes=rectangles)
     })
     
     output$training <- renderPlot({
