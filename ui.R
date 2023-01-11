@@ -53,7 +53,7 @@ dashboardPage(
                     )
             ),
             tabItem(tabName = "fitness",
-                    h2("Fitness"),
+                    h2("Training"),
                     uiOutput("activity_type_fitness"),
                     fluidRow(
                         box(title="Training status",

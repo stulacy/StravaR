@@ -87,14 +87,13 @@ function(input, output, session) {
     
     mileage_df <- eventReactive(input$activity_type_select_mileage, {
         types <- input$activity_type_select_mileage
-        tbl(con, "activities") |>
+        dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
+            select(start_time, distance) |>
             collect() |>
-            mutate(time = as_datetime(start_time),
-                   date = as_date(time)) |>
-            group_by(date) |>
-            summarise(distance = sum(distance)) |>
-            ungroup()
+            setDT()
+        dt[, date := as_date(as_datetime(start_time))]
+        dt[, .(distance = sum(distance)), by=date]
     })
     
     hrss <- eventReactive(input$activity_type_select_fitness, {
@@ -103,9 +102,10 @@ function(input, output, session) {
                         inner_join(tbl(con, "activities"), by="activity_id") |>
                         filter(activity_type %in% types) |>
                         collect() |>
-                        mutate(time = as_datetime(time),
-                               date = as_date(time)) |>
                         setDT()
+        fit_data[, time := as_datetime(time)]
+        fit_data[, date := as_date(time)]
+        
         # Calculate HRSS per activity
         # Assume only one athlete
         athlete_hr <- tbl(con, "athlete") |>
@@ -148,25 +148,31 @@ function(input, output, session) {
     
     routes_df <- eventReactive(input$activity_type_select_routes, {
         types <- input$activity_type_select_routes
-        tbl(con, "activities") |>
+        dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             inner_join(tbl(con, "location"), by="activity_id") |>
             select(activity_id, name, time, lat, lon) |>
             collect() |>
-            mutate(time = as_datetime(time),
-                   date = as_date(time)) |>
-            arrange(time)
+            setDT()
+        
+        dt[, time := as_datetime(time)]
+        dt[, date := as_date(time)]
+        setorder(dt, time)
+        dt
     })
     
     output$mileage_cumulative <- renderPlotly({
-        df2 <- mileage_df() |>
-            mutate(Year = as.factor(year(date)),
-                   Date = as_datetime(sprintf("2000-%d-%d", month(date), day(date)))) %>%
-            group_by(Year) %>%
-            arrange(Date) %>%
-            mutate(Distance = cumsum(distance),
-                   label = ifelse(Date == max(Date), as.character(Year), NA_character_)) %>%
-            ungroup() 
+        df2 <- mileage_df()
+        df2[, c('Year', 'Date') := .(as.factor(year(date)), 
+                                     as_datetime(sprintf("2000-%d-%d", 
+                                                         month(date),
+                                                         day(date))))]
+        setorder(df2, Date)
+        df2[, c('Distance', 'label') := .(cumsum(distance),
+                                          ifelse(Date == max(Date),
+                                                 as.character(Year),
+                                                 NA_character_)),
+            by=Year]
         
         p <- plot_ly(x=~Date)
         for (group in unique(df2$Year)) {
@@ -207,26 +213,23 @@ function(input, output, session) {
     
     output$mileage_weekly <- renderPlotly({
         df <- mileage_df()
-        all_dates <- tibble(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
+        all_dates <- data.table(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
         df <- merge(df, all_dates, on='date', all.y=TRUE)
-        df$distance <- ifelse(is.na(df$distance), 0, df$distance)
-        weeklyrate <- zoo::rollsum(zoo(df$distance, df$date), 7, fill=NA)
-        value <- zoo::rollmean(zoo(weeklyrate, df$date), 7, fill=NA)
-        
-        df <- tibble(mileage=value,
-                     Date=as_datetime(df$date))
+        df[, distance := ifelse(is.na(df$distance), 0, df$distance)]
+        df[, weeklyrate := rollsum(zoo(distance, date), 7, fill=NA)]
+        df[, mileage := rollmean(zoo(weeklyrate, date), 7, fill=NA)]
         
         # Generate alternate shaded years
-        years <- unique(year(df$Date))
+        years <- unique(year(df$date))
         start <- as_datetime(sapply(years, function(x) sprintf("%d-01-01", x)))
         end <- as_datetime(sapply(years, function(x) sprintf("%d-12-31", x)))
         ribbons <- tibble(year=years, start=start, end=end,
-                          ymin=0, ymax=1.10*max(value, na.rm=T)) |>
+                          ymin=0, ymax=1.10*max(df$mileage, na.rm=T)) |>
             mutate(shaded = year %% 2 == 0)
         # Replace the first date with the first actual date I ran
-        ribbons$start[1] <- min(df$Date)
+        ribbons$start[1] <- min(df$date)
         
-        p <- plot_ly(x=~Date,
+        p <- plot_ly(x=~date,
                      y=~mileage,
                      data=df,
                      type="scatter",
@@ -252,43 +255,38 @@ function(input, output, session) {
         ggplotly(p, tooltip=c('x', 'y')) |>
             layout( yaxis = list(title="7-day rolling average of weekly distance", 
                                  hoverformat = '.0f'),
-                    xaxis = list(title="",
-                                 range=c(today() - months(1),
-                                         today())),
+                    xaxis = list(title=""),
                     shapes=rectangles)
     })
     
     output$training <- renderPlotly({
         df <- hrss()
-        FITNESS_TRANSLATION <- -60
+        FORM_TRANSLATION <- 40
         x_buffer_days <- 80
+        
         # Original band definitions
-        bands <- data.frame(
+        bands <- data.table(
             type=c('Freshness', 'Neutral', 'Optimal'),
             upper=c(25, 5, -10),
             lower=c(5, -10, -30),
             colour=c("#FC8D59", "#FFFFBF", "#99D594")
-        ) |>
-            # Then translated version
-            mutate(
-                upper = FITNESS_TRANSLATION - upper,
-                lower = FITNESS_TRANSLATION - lower
-            )
+        ) 
         
-        df_long <- df %>%
-            # Just so on plot want to maximise Form rather than minimize
-            mutate(Form = FITNESS_TRANSLATION - Form)
+        # Apply scaling to make Form maximizable
+        bands[, c("upper", "lower") := .(FORM_TRANSLATION - upper,
+                                         FORM_TRANSLATION - lower)]
+        df[, Form := FORM_TRANSLATION - Form]
         
-         browser()
+        df <- bands[df, 
+              .(date, Form, Fitness, Fatigue, type, lower, upper), 
+              on=.(lower > Form, upper < Form)]
         
-         p1 <- plot_ly(x=~date, y=~Form, data=df_long,
+         p1 <- plot_ly(x=~date, y=~Form, data=df,
                        type="scatter", mode="lines",
+                       text=~type,
                        name="Form",
                        showlegend=FALSE)
-         # TODO Get it to display overtraining?
-                                #hovertemplate=paste("Year: %{text}<br>",
-                                #                    "Distance: %{y:.0f}km<br>",
-                                #                    "Date: %{x|%b %d}<extra></extra>"))# |>
+         
          rectangles <- vector(mode="list", length=3)
          for (i in 1:nrow(bands)) {
              rectangles[[i]] <- list(
@@ -296,24 +294,39 @@ function(input, output, session) {
                  fillcolor=bands$colour[i],
                  line=list(color=bands$colour[i]),
                  opacity=0.2,
-                 x0=min(df_long$date),
-                 x1=max(df_long$date),
+                 x0=min(df$date),
+                 x1=max(df$date),
                  y0=bands$lower[i],
                  y1=bands$upper[i]
              )
          }
-         p1 <- p1 |> layout(shapes=rectangles)
+         p1 <- p1 |> 
+                 layout(shapes=rectangles,
+                        yaxis=list(title="Form",
+                                   hoverformat=".0f"))
          
-         p2 <- plot_ly(x=~date, y=~Fitness, data=df_long,
+         p2 <- plot_ly(x=~date, y=~Fitness, data=df,
                        type="scatter", mode="lines",
                        name="Fitness",
-                       showlegend=FALSE)
-         p3 <- plot_ly(x=~date, y=~Fatigue, data=df_long,
+                       showlegend=FALSE) |>
+                    layout(
+                        yaxis=list(
+                            title="Fitness",
+                            hoverformat=".0f"
+                            )
+                        )
+         p3 <- plot_ly(x=~date, y=~Fatigue, data=df,
                        type="scatter", mode="lines",
                        name="Fatigue",
-                       showlegend=FALSE)
-         p <- subplot(p1, p2, p3, shareX = TRUE, nrows=3)
-        ggplotly(p) |>
+                       showlegend=FALSE) |>
+                    layout(
+                        yaxis=list(
+                            title="Fatigue",
+                            hoverformat=".0f"
+                        )
+                    )
+         subplot(p1, p2, p3, shareX = TRUE, nrows=3,
+                      titleY=TRUE) |>
             layout(hovermode="x unified",
                    xaxis=list(title=""))
     })
