@@ -258,51 +258,64 @@ function(input, output, session) {
                     shapes=rectangles)
     })
     
-    output$training <- renderPlot({
+    output$training <- renderPlotly({
         df <- hrss()
+        FITNESS_TRANSLATION <- -60
         x_buffer_days <- 80
+        # Original band definitions
         bands <- data.frame(
             type=c('Freshness', 'Neutral', 'Optimal'),
             upper=c(25, 5, -10),
-            lower=c(5, -10, -30)
-        )
-        bands_plot <- bands[rep(1:nrow(bands), nrow(df)+x_buffer_days), ]
-        bands_plot$date <- rep(c(df$date, 
-                                 seq.Date(max(df$date)+1,
-                                          max(df$date)+x_buffer_days,
-                                          by=1)), 
-                               each=nrow(bands))
-        bands_plot$name <- factor('Form',
-                                  levels=c('Form', 'Fitness', 'Fatigue'))
+            lower=c(5, -10, -30),
+            colour=c("#FC8D59", "#FFFFBF", "#99D594")
+        ) |>
+            # Then translated version
+            mutate(
+                upper = FITNESS_TRANSLATION - upper,
+                lower = FITNESS_TRANSLATION - lower
+            )
         
         df_long <- df %>%
-            pivot_longer(-(c(date, hrss))) |>
-            mutate(name = factor(name,
-                                 levels=c('Form', 'Fitness', 'Fatigue')))
-        df_long |>
-            ggplot() +
-                geom_ribbon(aes(x=date, ymin=lower, ymax=upper, fill=type), 
-                            data=bands_plot, alpha=0.3) +
-                geom_label(aes(x=date, y=mid, label=type, colour=type), 
-                          data=bands_plot |> 
-                              group_by(type) |>
-                              summarise(mid = lower + (upper - lower)/2,
-                                        date=max(date) - x_buffer_days /2) |> 
-                              ungroup() |> 
-                              distinct(type, mid, date) |>
-                              mutate(name = factor('Form',
-                                                   levels=c('Form', 'Fitness', 'Fatigue')))) +
-                geom_line(aes(x=date, y=value)) + 
-                theme_bw() +
-                facet_wrap(~name, ncol=1,
-                           scales="free_y") +
-                labs(x="", y="") +
-                scale_x_date(date_breaks = "2 month",
-                             date_labels = "%b %Y") +
-                guides(fill="none", colour="none") +
-                scale_fill_viridis_d("") +
-                scale_colour_viridis_d("") +
-                theme(legend.position = "bottom")
+            # Just so on plot want to maximise Form rather than minimize
+            mutate(Form = FITNESS_TRANSLATION - Form)
+        
+         browser()
+        
+         p1 <- plot_ly(x=~date, y=~Form, data=df_long,
+                       type="scatter", mode="lines",
+                       name="Form",
+                       showlegend=FALSE)
+         # TODO Get it to display overtraining?
+                                #hovertemplate=paste("Year: %{text}<br>",
+                                #                    "Distance: %{y:.0f}km<br>",
+                                #                    "Date: %{x|%b %d}<extra></extra>"))# |>
+         rectangles <- vector(mode="list", length=3)
+         for (i in 1:nrow(bands)) {
+             rectangles[[i]] <- list(
+                 type="rect",
+                 fillcolor=bands$colour[i],
+                 line=list(color=bands$colour[i]),
+                 opacity=0.2,
+                 x0=min(df_long$date),
+                 x1=max(df_long$date),
+                 y0=bands$lower[i],
+                 y1=bands$upper[i]
+             )
+         }
+         p1 <- p1 |> layout(shapes=rectangles)
+         
+         p2 <- plot_ly(x=~date, y=~Fitness, data=df_long,
+                       type="scatter", mode="lines",
+                       name="Fitness",
+                       showlegend=FALSE)
+         p3 <- plot_ly(x=~date, y=~Fatigue, data=df_long,
+                       type="scatter", mode="lines",
+                       name="Fatigue",
+                       showlegend=FALSE)
+         p <- subplot(p1, p2, p3, shareX = TRUE, nrows=3)
+        ggplotly(p) |>
+            layout(hovermode="x unified",
+                   xaxis=list(title=""))
     })
     
     output$routes <- renderLeaflet({
@@ -326,8 +339,7 @@ function(input, output, session) {
 }
 
 # TODO plotly
-#  - get weekly geom_rect in more native plotly
-# TODO icons
+#  - Fitness plot
 # TODO add badges (i.e. xKm in last week + month + year), or current training status
 # TODO pbs?
 # TODO clean up

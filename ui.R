@@ -57,7 +57,7 @@ dashboardPage(
                     uiOutput("activity_type_fitness"),
                     fluidRow(
                         box(title="Training status",
-                            withSpinner(plotOutput("training")),
+                            withSpinner(plotlyOutput("training")),
                             status="success",
                             solidHeader = TRUE,
                             width=12)
