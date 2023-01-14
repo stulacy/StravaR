@@ -42,6 +42,25 @@ create_activity_type_checkbox <- function(keyword) {
 
 function(input, output, session) {
     
+    # Get all dates from last 52 weeks
+    days_til_sunday <- 7 - wday(today(), week_start=1)
+    first_day <- today() + days(days_til_sunday) - weeks(52) + days(1)
+    all_dates <- data.table(date=seq.Date(from=first_day, to=today() + days(days_til_sunday), by="day"))
+    all_dates[, c("wday", "week", "year") := .(wday(date, week_start=1),
+                                               isoweek(date),
+                                               year(date))]
+    all_dates[, year_diff := year - min(year)]
+    all_dates[, week := week + year_diff * 52]
+    # The first days before Monday in the new Year will be off,
+    # since technically they'll be week 52 and will add an additional 52
+    all_dates[ week == 104, week := 52]
+    all_dates[, week := paste0("week_", week - min(week))]
+    all_dates[, c('year_diff', 'year') := NULL]
+    
+    # Work out the week number with first months
+    all_dates[ wday == 1, month := month(date)]
+    month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
+    
     output$activity_type_table <- renderUI({
         create_activity_type_checkbox("table")
     })
@@ -83,6 +102,63 @@ function(input, output, session) {
                 Duration=dur_fmt,
                 `Elevation (m)`=elevation
            )
+    })
+    
+    output$calendar <- renderPlotly({
+        # TODO where should this select live?
+        # TODO Make dataset reactive on input, so this render is just 
+        # dependent on the dataset
+        type <- input$activity_type_select_table
+        df_raw <- tbl(con, "activities") |>
+            filter(start_time >= local(as.numeric(as_datetime(first_day))),
+                   activity_type %in% type) |>
+            collect() |>
+            setDT()
+        df <- df_raw[, .(distance = sum(distance)), 
+           by=.(date=as_date(as_datetime(start_time)))]
+        
+        # Add all possible dates
+        df <- df[all_dates, on='date']
+        
+        # Form wide and add 0s for days with no activities
+        df_wide <- dcast(df, wday ~ week, value.var="distance")
+        setorder(df_wide, -wday)
+        setcolorder(df_wide, c("wday", paste("week", 0:51, sep="_")))
+        setnafill(df_wide, fill=0)
+        
+        colour_granularity <- 9
+        plot_ly(
+            z = as.matrix(df_wide[, -c("wday")]),
+            type = "heatmap",
+            text=apply(matrix(as.character(all_dates$date), nrow=7, ncol=52), 2, rev),
+            colors=c("white", RColorBrewer::brewer.pal(colour_granularity, "Oranges")[2:colour_granularity]),
+            hovertemplate="%{z}km on %{text}<extra></extra>",
+            xgap=2,
+            ygap=2,
+            showscale=FALSE
+        ) |>
+            config(displayModeBar=FALSE) |>
+            layout(yaxis=list(scaleanchor='x', scaleratio=1,
+                              zeroline=FALSE,
+                              constrain="domain",
+                              ticks="",
+                              tickmode="array",
+                              tickvals=seq(0, 6),
+                              ticktext=c("Sun", "Sat", "Fri", "Thurs", "Weds", "Tues", "Mon")),
+                   xaxis=list(zeroline=FALSE,
+                              side="top",
+                              ticks="",
+                              tickmode="array",
+                              tickvals=month_breaks,
+                              ticktext=c("Jan", "Feb", "Mar",
+                                         "Apr", "May", "Jun",
+                                         "Jul", "Aug", "Sep",
+                                         "Oct", "Nov", "Dec")),
+                   title=sprintf("%d %ss in the last year", 
+                                 nrow(df_raw),
+                                 tolower(paste(type, collapse='+'))
+                                 )
+                   )
     })
     
     mileage_df <- eventReactive(input$activity_type_select_mileage, {
@@ -351,8 +427,9 @@ function(input, output, session) {
     })
 }
 
-# TODO plotly
-#  - Fitness plot
-# TODO add badges (i.e. xKm in last week + month + year), or current training status
+# TODO Make activity type global option
+# TODO add badges (i.e. xKm in last week + month + year), 
+#  current training status to homepage
+# TODO Save default activity type in DB
 # TODO pbs?
 # TODO clean up

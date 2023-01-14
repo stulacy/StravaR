@@ -22,16 +22,20 @@ dashboardPage(
             tabItem(tabName = "data",
                     h2("Activities"),
                     fluidRow(
-                        column(
+                            box(
+                                title="Year's history",
+                                withSpinner(plotlyOutput("calendar")),
+                                solidHeader = TRUE,
+                                width=6,
+                                status="success"
+                            ),
                             box(title = "Activities",
                                 uiOutput("activity_type_table"),
                                 withSpinner(DTOutput("activities")),
                                 solidHeader = TRUE,
-                                width=8,
-                                status="success"),
-                            width=12, 
-                            offset=2
-                        )
+                                width=6,
+                                status="success"
+                            ),
                     )
             ),
             tabItem(tabName = "mileage",
