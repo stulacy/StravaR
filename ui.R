@@ -4,15 +4,16 @@ library(shinydashboard)
 library(shinycssloaders)
 library(DT)
 library(leaflet)
+library(plotly)
 
 dashboardPage(
     dashboardHeader(title="StravaR"),
     dashboardSidebar(
         sidebarMenu(
             menuItem("Activities", tabName = "data", icon = icon("dashboard")),
-            menuItem("Mileage", tabName = "mileage", icon = icon("th")),
-            menuItem("Fitness", tabName = "fitness", icon = icon("th")),
-            menuItem("Routes", tabName = "routes", icon = icon("th"))
+            menuItem("Mileage", tabName = "mileage", icon = icon("chart-line")),
+            menuItem("Training", tabName = "fitness", icon = icon("heart")),
+            menuItem("Routes", tabName = "routes", icon = icon("map"))
         )
     ),
     dashboardBody(
@@ -21,16 +22,20 @@ dashboardPage(
             tabItem(tabName = "data",
                     h2("Activities"),
                     fluidRow(
-                        column(
+                            box(
+                                title="Year's history",
+                                withSpinner(plotlyOutput("calendar")),
+                                solidHeader = TRUE,
+                                width=6,
+                                status="success"
+                            ),
                             box(title = "Activities",
                                 uiOutput("activity_type_table"),
                                 withSpinner(DTOutput("activities")),
                                 solidHeader = TRUE,
-                                width=8,
-                                status="success"),
-                            width=12, 
-                            offset=2
-                        )
+                                width=6,
+                                status="success"
+                            ),
                     )
             ),
             tabItem(tabName = "mileage",
@@ -38,13 +43,13 @@ dashboardPage(
                     uiOutput("activity_type_mileage"),
                     fluidRow(
                         box(title="Yearly mileage",
-                            withSpinner(plotOutput("mileage_cumulative")),
+                            withSpinner(plotlyOutput("mileage_cumulative")),
                             solidHeader=TRUE,
                             status="success",
                             width=6
                         ),
                         box(title="Rolling mileage",
-                            withSpinner(plotOutput("mileage_weekly")),
+                            withSpinner(plotlyOutput("mileage_weekly")),
                             solidHeader=TRUE,
                             status="success",
                             width=6
@@ -52,11 +57,11 @@ dashboardPage(
                     )
             ),
             tabItem(tabName = "fitness",
-                    h2("Fitness"),
+                    h2("Training"),
                     uiOutput("activity_type_fitness"),
                     fluidRow(
                         box(title="Training status",
-                            withSpinner(plotOutput("training")),
+                            withSpinner(plotlyOutput("training")),
                             status="success",
                             solidHeader = TRUE,
                             width=12)
