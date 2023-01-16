@@ -4,7 +4,6 @@
 DATA_DIR=data
 SETUP_DIR=setup
 DB=$DATA_DIR/strava.db
-MAP_CACHE=$DATA_DIR/maps.rds
 PATH_TO_FITCSV_JAR=/opt/fit_sdk/java/FitCSVTool.jar
 EXTRACT_DIR=$DATA_DIR/extracts
 UNZIPPED_DIR=$DATA_DIR/raw
@@ -61,6 +60,3 @@ if [ -f "$DB" ] ; then
 fi
 sqlite3 $DB < $SETUP_DIR/schema.sql > /dev/null
 Rscript --vanilla $SETUP_DIR/populate_db.R $DB $CONFIG $CLEAN_DIR/activities.csv $GPX_DIR $FIT_DIR
-
-# Download maps
-Rscript --vanilla $SETUP_DIR/download_maps.R $DB $CONFIG $MAP_CACHE

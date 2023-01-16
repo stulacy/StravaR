@@ -66,6 +66,8 @@ setcolorder(fit_data, c('activity_id', 'time', 'lat', 'lon'))
 # Athlete settings
 config <- fromJSON(config_fn)
 athlete <- as.data.frame(config$athlete)
+app_settings <- data.frame(property=names(config$app),
+                           value=unlist(config$app))
 
 ################ Populate DB
 con <- dbConnect(SQLite(), db_fn)
@@ -74,4 +76,5 @@ dbAppendTable(con, "heartrate", fit_data[ !is.na(heartrate), .(activity_id, time
 dbAppendTable(con, "location", fit_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])
 dbAppendTable(con, "location", gpx_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])
 dbAppendTable(con, "athlete", athlete)
+dbAppendTable(con, "config", app_settings)
 dbDisconnect(con)

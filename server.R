@@ -5,7 +5,6 @@ library(ggrepel)
 library(lubridate)
 library(tidyverse)
 library(hms)
-library(osmdata)
 library(DBI)
 library(RSQLite)
 library(shinyjs)
@@ -21,6 +20,9 @@ ACTIVITY_TYPES <- tbl(con, "activity_types") |>
                     pull(activity_type)
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
+DEFAULT_ACTIVITY <- tbl(con, "config") |>
+                        filter(property == 'default_activity') |>
+                        pull(value)
 
 calculate_hrss <- function(hr, ts, HRmax, HRrest, LTHR, k=1.92) {
    hrr <- (hr - HRrest) / (HRmax - HRrest) 
@@ -30,14 +32,6 @@ calculate_hrss <- function(hr, ts, HRmax, HRrest, LTHR, k=1.92) {
    trimp_lthrhour <- 60 * hrr_lthr * 0.64 * exp(k * hrr_lthr)
    hrss <- trimp_activity / trimp_lthrhour
    hrss * 100
-}
-
-# Creates an activity_type_select_<keyword> checkboxgroup
-create_activity_type_checkbox <- function(keyword) {
-    checkboxGroupInput(sprintf("activity_type_select_%s", keyword),
-                       "Activity Type",
-                       ACTIVITY_TYPES,
-                       selected="Run")
 }
 
 function(input, output, session) {
@@ -61,25 +55,17 @@ function(input, output, session) {
     all_dates[ wday == 1, month := month(date)]
     month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
     
-    output$activity_type_table <- renderUI({
-        create_activity_type_checkbox("table")
-    })
-    
-    output$activity_type_mileage <- renderUI({
-        create_activity_type_checkbox("mileage")
-    })
-
-    output$activity_type_fitness <- renderUI({
-        create_activity_type_checkbox("fitness")
-    })
-    
-    output$activity_type_routes <- renderUI({
-        create_activity_type_checkbox("routes")
+    output$activity_type_select_wrapper <- renderUI({
+        checkboxGroupInput("activity_type_select",
+                           "Activity Type",
+                           ACTIVITY_TYPES,
+                           # TODO pull default activity from DB
+                           selected=DEFAULT_ACTIVITY)
     })
     
     output$activities <- renderDT({
-        req(input$activity_type_select_table)
-        types <- input$activity_type_select_table
+        req(input$activity_type_select)
+        types <- input$activity_type_select
         tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             collect() |>
@@ -105,10 +91,9 @@ function(input, output, session) {
     })
     
     output$calendar <- renderPlotly({
-        # TODO where should this select live?
         # TODO Make dataset reactive on input, so this render is just 
         # dependent on the dataset
-        type <- input$activity_type_select_table
+        type <- input$activity_type_select
         df_raw <- tbl(con, "activities") |>
             filter(start_time >= local(as.numeric(as_datetime(first_day))),
                    activity_type %in% type) |>
@@ -161,8 +146,8 @@ function(input, output, session) {
                    )
     })
     
-    mileage_df <- eventReactive(input$activity_type_select_mileage, {
-        types <- input$activity_type_select_mileage
+    mileage_df <- eventReactive(input$activity_type_select, {
+        types <- input$activity_type_select
         dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             select(start_time, distance) |>
@@ -172,8 +157,8 @@ function(input, output, session) {
         dt[, .(distance = sum(distance)), by=date]
     })
     
-    hrss <- eventReactive(input$activity_type_select_fitness, {
-        types <- input$activity_type_select_fitness
+    hrss <- eventReactive(input$activity_type_select, {
+        types <- input$activity_type_select
         fit_data <- tbl(con, "heartrate") |>
                         inner_join(tbl(con, "activities"), by="activity_id") |>
                         filter(activity_type %in% types) |>
@@ -222,8 +207,8 @@ function(input, output, session) {
         hrss
     })
     
-    routes_df <- eventReactive(input$activity_type_select_routes, {
-        types <- input$activity_type_select_routes
+    routes_df <- eventReactive(input$activity_type_select, {
+        types <- input$activity_type_select
         dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             inner_join(tbl(con, "location"), by="activity_id") |>
@@ -427,7 +412,6 @@ function(input, output, session) {
     })
 }
 
-# TODO Make activity type global option
 # TODO add badges (i.e. xKm in last week + month + year), 
 #  current training status to homepage
 # TODO Save default activity type in DB

@@ -5,6 +5,11 @@ CREATE TABLE activity_types (
 INSERT INTO activity_types VALUES('Run');
 INSERT INTO activity_types VALUES('Ride');
 
+CREATE TABLE config (
+    property TEXT,
+    value TEXT
+);
+
 CREATE TABLE activities (
   activity_id INTEGER PRIMARY KEY,
   activity_type TEXT,

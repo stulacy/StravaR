@@ -1,107 +1,12 @@
 {
+    "app": {
+        "default_activity": "Run"
+    },
     "athlete": {
         "height": null,
         "weight": null,
         "maxHR": null,
         "restHR": null,
         "thresholdHR": null
-    },
-    "map": {
-        "xmin": null,
-        "xmax": null,
-        "ymin": null,
-        "ymax": null,
-        "padding": 0.1,
-        "osmlayers": {
-            "land": {
-                "key": "landuse",
-                "value": [
-                    "farmland",
-                    "forest",
-                    "farmyard",
-                    "meadow"
-                ],
-                "graphics": {
-                    "attribute": "osm_polygons",
-                    "color": null,
-                    "fill": "green",
-                    "size": 0.1,
-                    "alpha": 0.3
-                }
-            },
-            "big_roads": {
-                "key": "highway",
-                "value": [
-                    "motorway", 
-                    "trunk", 
-                    "primary",
-                    "motorway_link",
-                    "trunk_link",
-                    "primary_link"
-                ],
-                "graphics": {
-                    "attribute": "osm_lines",
-                    "color": "black",
-                    "size": 0.5,
-                    "alpha": 0.6
-                }
-            },
-            "medium_roads": {
-                "key": "highway",
-                "value": [
-                    "secondary",
-                    "tertiary",
-                    "secondary_link",
-                    "tertiary_link"
-                ],
-                "graphics": {
-                    "attribute": "osm_lines",
-                    "color": "black",
-                    "size": 0.3,
-                    "alpha": 0.5
-                }
-            },
-            "small_roads": {
-                "key": "highway",
-                "value": [
-                    "residential",
-                    "living_street",
-                    "unclassified",
-                    "service",
-                    "footway"
-                ],
-                "graphics": {
-                    "attribute": "osm_lines",
-                    "color": "#666666",
-                    "size": 0.2,
-                    "alpha": 0.3
-                }
-            },
-            "rivers": {
-                "key": "waterway",
-                "value": [
-                    "river"
-                ],
-                "graphics": {
-                    "attribute": "osm_lines",
-                    "color": "steelblue",
-                    "linewidth": 1.0,
-                    "alpha": 1.0
-                }
-            },
-            "railway": {
-                "key": "railway",
-                "value": [
-                    "rail"
-                ],
-                "graphics": {
-                    "attribute": "osm_lines",
-                    "color": "black",
-                    "size": 0.2,
-                    "linetype": "dotdash",
-                    "alpha": 0.5
-                }
-            }
-        }
     }
 }
