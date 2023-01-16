@@ -13,7 +13,8 @@ dashboardPage(
             menuItem("Activities", tabName = "data", icon = icon("dashboard")),
             menuItem("Mileage", tabName = "mileage", icon = icon("chart-line")),
             menuItem("Training", tabName = "fitness", icon = icon("heart")),
-            menuItem("Routes", tabName = "routes", icon = icon("map"))
+            menuItem("Routes", tabName = "routes", icon = icon("map")),
+            uiOutput("activity_type_select_wrapper")
         )
     ),
     dashboardBody(
@@ -30,7 +31,6 @@ dashboardPage(
                                 status="success"
                             ),
                             box(title = "Activities",
-                                uiOutput("activity_type_table"),
                                 withSpinner(DTOutput("activities")),
                                 solidHeader = TRUE,
                                 width=6,
@@ -40,7 +40,6 @@ dashboardPage(
             ),
             tabItem(tabName = "mileage",
                     h2("Mileage"),
-                    uiOutput("activity_type_mileage"),
                     fluidRow(
                         box(title="Yearly mileage",
                             withSpinner(plotlyOutput("mileage_cumulative")),
@@ -58,7 +57,6 @@ dashboardPage(
             ),
             tabItem(tabName = "fitness",
                     h2("Training"),
-                    uiOutput("activity_type_fitness"),
                     fluidRow(
                         box(title="Training status",
                             withSpinner(plotlyOutput("training")),
@@ -69,7 +67,6 @@ dashboardPage(
             ),
             tabItem(tabName = "routes",
                     h2("Widgets tab content"),
-                    uiOutput("activity_type_routes"),
                     fluidRow(
                         column(
                             box(title="Routes",
