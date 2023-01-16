@@ -21,6 +21,9 @@ ACTIVITY_TYPES <- tbl(con, "activity_types") |>
                     pull(activity_type)
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
+DEFAULT_ACTIVITY <- tbl(con, "config") |>
+                        filter(property == 'default_activity') |>
+                        pull(value)
 
 calculate_hrss <- function(hr, ts, HRmax, HRrest, LTHR, k=1.92) {
    hrr <- (hr - HRrest) / (HRmax - HRrest) 
@@ -58,7 +61,7 @@ function(input, output, session) {
                            "Activity Type",
                            ACTIVITY_TYPES,
                            # TODO pull default activity from DB
-                           selected="Run")
+                           selected=DEFAULT_ACTIVITY)
     })
     
     output$activities <- renderDT({

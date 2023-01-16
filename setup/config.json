@@ -1,4 +1,7 @@
 {
+    "app": {
+        "default_activity": "Run"
+    },
     "athlete": {
         "height": null,
         "weight": null,
