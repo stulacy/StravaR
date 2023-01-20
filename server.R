@@ -24,16 +24,6 @@ DEFAULT_ACTIVITY <- tbl(con, "config") |>
                         filter(property == 'default_activity') |>
                         pull(value)
 
-calculate_hrss <- function(hr, ts, HRmax, HRrest, LTHR, k=1.92) {
-   hrr <- (hr - HRrest) / (HRmax - HRrest) 
-   times_diff_min <- c(0, diff(ts)) / 60
-   trimp_activity <- sum(times_diff_min * hrr * 0.64 * exp(k * hrr))
-   hrr_lthr <- (LTHR - HRrest) / (HRmax - HRrest)
-   trimp_lthrhour <- 60 * hrr_lthr * 0.64 * exp(k * hrr_lthr)
-   hrss <- trimp_activity / trimp_lthrhour
-   hrss * 100
-}
-
 function(input, output, session) {
     
     # Get all dates from last 52 weeks
@@ -93,6 +83,7 @@ function(input, output, session) {
     output$calendar <- renderPlotly({
         # TODO Make dataset reactive on input, so this render is just 
         # dependent on the dataset
+        req(input$activity_type_select)
         type <- input$activity_type_select
         df_raw <- tbl(con, "activities") |>
             filter(start_time >= local(as.numeric(as_datetime(first_day))),
@@ -159,26 +150,12 @@ function(input, output, session) {
     
     hrss <- eventReactive(input$activity_type_select, {
         types <- input$activity_type_select
-        fit_data <- tbl(con, "heartrate") |>
+        hrss <- tbl(con, "fitness") |>
                         inner_join(tbl(con, "activities"), by="activity_id") |>
                         filter(activity_type %in% types) |>
                         collect() |>
+                        mutate(date = as_date(as_datetime(start_time))) |>
                         setDT()
-        fit_data[, time := as_datetime(time)]
-        fit_data[, date := as_date(time)]
-        
-        # Calculate HRSS per activity
-        # Assume only one athlete
-        athlete_hr <- tbl(con, "athlete") |>
-            select(maxHR, restHR, thresholdHR) |>
-            head(1) |>
-            collect()
-        hrss <- fit_data[, .(hrss = calculate_hrss(heartrate,
-                                                   time,
-                                                   athlete_hr$maxHR,
-                                                   athlete_hr$restHR,
-                                                   athlete_hr$thresholdHR,
-                                                   )), by=.(date, activity_id)]
         # Summarise per date
         hrss <- hrss[, .(hrss = sum(hrss)), by=date][order(date)]
         # Make entry for every day as need to run equation everyday as time isn't
@@ -322,20 +299,22 @@ function(input, output, session) {
     
     output$training <- renderPlotly({
         df <- hrss()
+        X_BUFFER_DAYS <- 40
         FORM_TRANSLATION <- 40
         x_buffer_days <- 80
+        COLOURS <- c("#FC8D59", "#FFFFBF", "#99D594")
         
         # Original band definitions
         bands <- data.table(
-            type=c('Freshness', 'Neutral', 'Optimal'),
+            type=c('Recovery', 'Neutral', 'Optimal'),
             upper=c(25, 5, -10),
             lower=c(5, -10, -30),
-            colour=c("#FC8D59", "#FFFFBF", "#99D594")
+            colour=COLOURS
         ) 
-        
         # Apply scaling to make Form maximizable
         bands[, c("upper", "lower") := .(FORM_TRANSLATION - upper,
                                          FORM_TRANSLATION - lower)]
+        bands[, mid := lower + (upper - lower) / 2 ]
         df[, Form := FORM_TRANSLATION - Form]
         
         df <- bands[df, 
@@ -346,7 +325,8 @@ function(input, output, session) {
                        type="scatter", mode="lines",
                        text=~type,
                        name="Form",
-                       showlegend=FALSE)
+                       showlegend=FALSE,
+                       hoverlabel=list(bgcolor=df$colour))
          
          rectangles <- vector(mode="list", length=3)
          for (i in 1:nrow(bands)) {
@@ -356,7 +336,8 @@ function(input, output, session) {
                  line=list(color=bands$colour[i]),
                  opacity=0.2,
                  x0=min(df$date),
-                 x1=max(df$date),
+                 hoverlabel=list(bgcolor=COLOURS[i]),
+                 x1=today() + days(X_BUFFER_DAYS),
                  y0=bands$lower[i],
                  y1=bands$upper[i]
              )
@@ -364,7 +345,17 @@ function(input, output, session) {
          p1 <- p1 |> 
                  layout(shapes=rectangles,
                         yaxis=list(title="Form",
-                                   hoverformat=".0f"))
+                                   hoverformat=".0f")) 
+         for (i in 1:nrow(bands)) {
+             p1 <- p1 |>
+                 add_annotations(
+                     text=bands$type[i],
+                     x=today() + days(X_BUFFER_DAYS/2),
+                     y=bands$mid[i],
+                     font_color=bands$colour[i],
+                     showarrow=FALSE
+                 ) 
+         }
          
          p2 <- plot_ly(x=~date, y=~Fitness, data=df,
                        type="scatter", mode="lines",
@@ -414,6 +405,4 @@ function(input, output, session) {
 
 # TODO add badges (i.e. xKm in last week + month + year), 
 #  current training status to homepage
-# TODO Save default activity type in DB
-# TODO pbs?
 # TODO clean up

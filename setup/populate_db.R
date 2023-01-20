@@ -6,6 +6,8 @@ library(DBI)
 library(RSQLite)
 library(jsonlite)
 
+source("utils.R")
+
 args <- commandArgs(trailingOnly=TRUE)
 if (length(args) != 5) {
     stop(sprintf("%d arguments provided, please provide 5: DB path, config path, activities.csv path, clean GPX CSV dir, clean Fit CSV dir",
@@ -69,12 +71,23 @@ athlete <- as.data.frame(config$athlete)
 app_settings <- data.frame(property=names(config$app),
                            value=unlist(config$app))
 
+# Calculate activity level fitness scores
+hrss <- fit_data[!is.na(heartrate), 
+                 .(hrss = calculate_hrss(heartrate,
+                                         time,
+                                         athlete$maxHR,
+                                         athlete$restHR,
+                                         athlete$thresholdHR,
+                                         )), 
+                 by=.(activity_id)]
+
 ################ Populate DB
 con <- dbConnect(SQLite(), db_fn)
 dbAppendTable(con, "activities", all_activities)
 dbAppendTable(con, "heartrate", fit_data[ !is.na(heartrate), .(activity_id, time, heartrate)])
 dbAppendTable(con, "location", fit_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])
 dbAppendTable(con, "location", gpx_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])
+dbAppendTable(con, "fitness", hrss)
 dbAppendTable(con, "athlete", athlete)
 dbAppendTable(con, "config", app_settings)
 dbDisconnect(con)

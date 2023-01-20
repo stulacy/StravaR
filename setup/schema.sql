@@ -29,6 +29,13 @@ CREATE TABLE heartrate (
   FOREIGN KEY(activity_id) REFERENCES activities(activity_id)
 );
 
+CREATE TABLE fitness (
+  activity_id,
+  hrss REAL,
+  PRIMARY KEY(activity_id),
+  FOREIGN KEY(activity_id) REFERENCES activities(activity_id)
+);
+
 CREATE TABLE location (
   activity_id INTEGER,
   time TIMESTAMP,
