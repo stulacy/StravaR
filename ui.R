@@ -58,7 +58,7 @@ dashboardPage(
             tabItem(tabName = "fitness",
                     h2("Training"),
                     fluidRow(
-                        box(title="Training status",
+                        box(title="Training history",
                             withSpinner(plotlyOutput("training")),
                             status="success",
                             solidHeader = TRUE,

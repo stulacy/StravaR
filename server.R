@@ -23,6 +23,19 @@ N_YEARS <- length(YEARS)
 DEFAULT_ACTIVITY <- tbl(con, "config") |>
                         filter(property == 'default_activity') |>
                         pull(value)
+FORM_OFFSET <- 40
+# Original band definitions
+TRAINING_COLOURS <- c("#9E0142", "#FDAE61", "#66C2A5")
+TRAINING_BANDS <- data.table(
+    type=c('Recovery', 'Neutral', 'Optimal'),
+    upper=c(25, 5, -10),
+    lower=c(5, -10, -30),
+    colour=TRAINING_COLOURS
+) 
+# Apply scaling to make Form maximizable
+TRAINING_BANDS[, c("upper", "lower") := .(FORM_OFFSET - upper,
+                                 FORM_OFFSET - lower)]
+TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
 
 function(input, output, session) {
     
@@ -49,7 +62,6 @@ function(input, output, session) {
         checkboxGroupInput("activity_type_select",
                            "Activity Type",
                            ACTIVITY_TYPES,
-                           # TODO pull default activity from DB
                            selected=DEFAULT_ACTIVITY)
     })
     
@@ -306,59 +318,50 @@ function(input, output, session) {
     output$training <- renderPlotly({
         df <- hrss()
         X_BUFFER_DAYS <- 40
-        FORM_TRANSLATION <- 40
-        x_buffer_days <- 80
-        COLOURS <- c("#FC8D59", "#FFFFBF", "#99D594")
         
-        # Original band definitions
-        bands <- data.table(
-            type=c('Recovery', 'Neutral', 'Optimal'),
-            upper=c(25, 5, -10),
-            lower=c(5, -10, -30),
-            colour=COLOURS
-        ) 
-        # Apply scaling to make Form maximizable
-        bands[, c("upper", "lower") := .(FORM_TRANSLATION - upper,
-                                         FORM_TRANSLATION - lower)]
-        bands[, mid := lower + (upper - lower) / 2 ]
-        df[, Form := FORM_TRANSLATION - Form]
+        df[, Form := FORM_OFFSET - Form]
         
-        df <- bands[df, 
+        df <- TRAINING_BANDS[df, 
               .(date, Form, Fitness, Fatigue, type, lower, upper), 
               on=.(lower > Form, upper < Form)]
+        
+        curr_status <- tail(df, 1)$type
+        curr_status_colour <- TRAINING_BANDS[tail(df, 1), on=.(type)]$colour
         
          p1 <- plot_ly(x=~date, y=~Form, data=df,
                        type="scatter", mode="lines",
                        text=~type,
                        name="Form",
                        showlegend=FALSE,
-                       hoverlabel=list(bgcolor=df$colour))
+                       hoverlabel=list(bgcolor=df$colour)) |>
+                        layout(title=list(text=sprintf("Current training status: %s", curr_status),
+                                          font=list(color=curr_status_colour)))
          
          rectangles <- vector(mode="list", length=3)
-         for (i in 1:nrow(bands)) {
+         for (i in 1:nrow(TRAINING_BANDS)) {
              rectangles[[i]] <- list(
                  type="rect",
-                 fillcolor=bands$colour[i],
-                 line=list(color=bands$colour[i]),
+                 fillcolor=TRAINING_BANDS$colour[i],
+                 line=list(color=TRAINING_BANDS$colour[i]),
                  opacity=0.2,
                  x0=min(df$date),
-                 hoverlabel=list(bgcolor=COLOURS[i]),
+                 hoverlabel=list(bgcolor=TRAINING_COLOURS[i]),
                  x1=today() + days(X_BUFFER_DAYS),
-                 y0=bands$lower[i],
-                 y1=bands$upper[i]
+                 y0=TRAINING_BANDS$lower[i],
+                 y1=TRAINING_BANDS$upper[i]
              )
          }
          p1 <- p1 |> 
                  layout(shapes=rectangles,
                         yaxis=list(title="Form",
                                    hoverformat=".0f")) 
-         for (i in 1:nrow(bands)) {
+         for (i in 1:nrow(TRAINING_BANDS)) {
              p1 <- p1 |>
                  add_annotations(
-                     text=bands$type[i],
+                     text=TRAINING_BANDS$type[i],
                      x=today() + days(X_BUFFER_DAYS/2),
-                     y=bands$mid[i],
-                     font_color=bands$colour[i],
+                     y=TRAINING_BANDS$mid[i],
+                     font_color=TRAINING_BANDS$colour[i],
                      showarrow=FALSE
                  ) 
          }
@@ -408,7 +411,3 @@ function(input, output, session) {
                          color="steelblue")
     })
 }
-
-# TODO add badges (i.e. xKm in last week + month + year), 
-#  current training status to homepage
-# TODO clean up
