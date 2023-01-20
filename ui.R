@@ -21,7 +21,6 @@ dashboardPage(
         useShinyjs(),
         tabItems(
             tabItem(tabName = "data",
-                    h2("Activities"),
                     fluidRow(
                             box(
                                 title="Year's history",
@@ -39,7 +38,6 @@ dashboardPage(
                     )
             ),
             tabItem(tabName = "mileage",
-                    h2("Mileage"),
                     fluidRow(
                         box(title="Yearly mileage",
                             withSpinner(plotlyOutput("mileage_cumulative")),
@@ -56,7 +54,6 @@ dashboardPage(
                     )
             ),
             tabItem(tabName = "fitness",
-                    h2("Training"),
                     fluidRow(
                         box(title="Training history",
                             withSpinner(plotlyOutput("training")),
@@ -66,7 +63,6 @@ dashboardPage(
                     )
             ),
             tabItem(tabName = "routes",
-                    h2("Widgets tab content"),
                     fluidRow(
                         column(
                             box(title="Routes",
