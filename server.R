@@ -72,6 +72,9 @@ function(input, output, session) {
             filter(activity_type %in% types) |>
             collect() |>
             mutate(start_time = as_datetime(start_time),
+                   name = sprintf("<a href='https://strava.com/activities/%s'>%s</a>", 
+                                  activity_id, 
+                                  name),
                    Date = as_date(start_time),
                    distance = round(distance, 1),
                    elevation = round(elevation),
@@ -81,7 +84,6 @@ function(input, output, session) {
                                      second(duration)),
                    dur_fmt = gsub("0h ", "", dur_fmt)) |>
             arrange(desc(start_time)) |>
-            
             select(
                 Date,
                 Type=activity_type,
@@ -90,7 +92,7 @@ function(input, output, session) {
                 Duration=dur_fmt,
                 `Elevation (m)`=elevation
            )
-    })
+    }, escape=FALSE)
     
     output$calendar <- renderPlotly({
         # TODO Make dataset reactive on input, so this render is just 

@@ -23,7 +23,8 @@ fit_dir <- args[5]
 # Load all activities
 all_activities <- fread(activities_fn)
 all_activities <- all_activities[, .(activity_type=`Activity Type`, 
-                                     activity_id = gsub("\\..+", "", basename(Filename)), 
+                                     activity_id = `Activity ID`,
+                                     filename_id = gsub("\\..+", "", basename(Filename)), 
                                      name = `Activity Name`,
                                      start_time = lubridate::as_datetime(`Activity Date`, format="%b %d, %Y, %I:%M:%S %p"),
                                      duration = `Elapsed Time`,
@@ -35,12 +36,14 @@ gpx_fns <- list.files(gpx_dir, full.names = TRUE)
 gpx_cols <- c('Date', 'Time', 'Latitude', 'Longitude')
 gpx_data <- rbindlist(lapply(setNames(gpx_fns, gpx_fns), fread, select=gpx_cols, fill=TRUE), 
                       fill=TRUE, idcol="filename")
-gpx_data[, activity_id := gsub("\\..+", "", basename(filename))]
 gpx_data[, Date := as_date(Date)]
 gpx_data[, Time := as_hms(Time)]
 gpx_data[, time := as_datetime(paste0(Date, Time))]
+gpx_data[, filename_id := gsub("\\..+", "", basename(filename))]
 gpx_data[, (c('Date', 'Time', 'filename')) := NULL]
 setnames(gpx_data, old=c('Latitude', 'Longitude'), new=c('lat', 'lon'))
+# load activity_id and set to first column
+gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
 setcolorder(gpx_data, c('activity_id', 'time', 'lat', 'lon'))
 
 # Load FIT data
@@ -51,8 +54,9 @@ fit_cols <- c("record.timestamp[s]",
               "record.position_long[semicircles]")
 fit_data <- rbindlist(lapply(setNames(fit_fns, fit_fns), fread, select=fit_cols, fill=TRUE), fill=TRUE, idcol="fn")
 setnames(fit_data, old=fit_cols, new=c('time', 'heartrate', 'lat', 'lon'))
-fit_data[, activity_id := gsub("\\..+", "", basename(fn))]
+fit_data[, filename_id := gsub("\\..+", "", basename(fn))]
 fit_data[, fn := NULL]
+fit_data <- all_activities[fit_data, .(lat, lon, time, activity_id, heartrate), on=.(filename_id)]
 
 fit_epoch_offset <- 631065600 
 fit_data[, time := as_datetime(time + fit_epoch_offset)]
@@ -83,7 +87,7 @@ hrss <- fit_data[!is.na(heartrate),
 
 ################ Populate DB
 con <- dbConnect(SQLite(), db_fn)
-dbAppendTable(con, "activities", all_activities)
+dbAppendTable(con, "activities", all_activities |> select(-filename_id))
 dbAppendTable(con, "heartrate", fit_data[ !is.na(heartrate), .(activity_id, time, heartrate)])
 dbAppendTable(con, "location", fit_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])
 dbAppendTable(con, "location", gpx_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])
