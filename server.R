@@ -89,9 +89,9 @@ function(input, output, session) {
             filter(start_time >= local(as.numeric(as_datetime(first_day))),
                    activity_type %in% type) |>
             collect() |>
+            mutate(date = as_date(as_datetime(start_time))) |>
             setDT()
-        df <- df_raw[, .(distance = sum(distance)), 
-           by=.(date=as_date(as_datetime(start_time)))]
+        df <- df_raw[, .(distance = sum(distance)), by=.(date)]
         
         # Add all possible dates
         df <- df[all_dates, on='date']
@@ -101,6 +101,8 @@ function(input, output, session) {
         setorder(df_wide, -wday)
         setcolorder(df_wide, c("wday", paste("week", 0:51, sep="_")))
         setnafill(df_wide, fill=0)
+        week_avg <- df_raw[ date > (today() - days(7)), .(mu=round(mean(distance)))]$mu
+        if (length(week_avg) == 0) week_avg <- 0
         
         colour_granularity <- 9
         plot_ly(
@@ -130,9 +132,12 @@ function(input, output, session) {
                                          "Apr", "May", "Jun",
                                          "Jul", "Aug", "Sep",
                                          "Oct", "Nov", "Dec")),
-                   title=sprintf("%d %ss in the last year", 
+                   title=sprintf("%d %ss in the last year with an average of %dkm\n%d in the last week with an average of %dkm", 
                                  nrow(df_raw),
-                                 tolower(paste(type, collapse='+'))
+                                 tolower(paste(type, collapse='+')),
+                                 round(mean(df_raw$distance)),
+                                 sum(df_raw$date > (today() - days(7))),
+                                 week_avg
                                  )
                    )
     })
