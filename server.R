@@ -241,7 +241,8 @@ function(input, output, session) {
                                 textfont=list(color=col, size=14),
                                 mode="marker+text",
                                 data=sub_df,
-                                showlegend=F)
+                                showlegend=F,
+                                hoverinfo='none')
         }
         
         ggplotly(p, tooltip=c('colour', 'x', 'y')) |>
