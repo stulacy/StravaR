@@ -21,9 +21,6 @@ ACTIVITY_TYPES <- tbl(con, "activity_types") |>
                     pull(activity_type)
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
-DEFAULT_ACTIVITY <- tbl(con, "config") |>
-                        filter(property == 'default_activity') |>
-                        pull(value)
 FORM_OFFSET <- 40
 # Original band definitions
 TRAINING_COLOURS <- c("#9E0142", "#FDAE61", "#66C2A5")
@@ -41,6 +38,10 @@ TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
 function(input, output, session) {
     
     fitness_updated <- reactiveVal(value=FALSE)
+    initial_default_activity <- tbl(con, "config") |>
+                            filter(property == 'default_activity') |>
+                            pull(value)
+    default_activity <- reactiveVal(value=initial_default_activity)
     
     # Get all dates from last 52 weeks
     days_til_sunday <- 7 - wday(today(), week_start=1)
@@ -67,6 +68,7 @@ function(input, output, session) {
                             as.list()
         modalDialog(
             title = "Update settings",
+            h4("Athlete Settings"),
             textInput("update_height", "Height (cm)", value=curr_settings$height),
             textInput("update_weight", "Weight (cm)", value=curr_settings$weight),
             textInput("update_maxHR", "Maximum heartrate (bpm)", value=curr_settings$maxHR),
@@ -75,6 +77,10 @@ function(input, output, session) {
             if (failed) {
                 div(tags$b("Values must be positive numbers", style="color: red;"))
             },
+            hr(),
+            h4("App Settings"),
+            radioButtons("update_default_activity", "Default activity",
+                         choices=ACTIVITY_TYPES, selected=default_activity()),
             easyClose = TRUE,
             fade=FALSE,
             footer=tagList(
@@ -89,7 +95,19 @@ function(input, output, session) {
     })
     
     observeEvent(input$update_settings, {
-        # Update values in DB
+        # Update default activity if changed, needing to update:
+        # this session (UI) and BD
+        if (input$update_default_activity != default_activity()) {
+            default_activity(input$update_default_activity)
+            q <- dbSendStatement(con, "UPDATE config SET 
+                                    value = ?
+                                  WHERE property = 'default_activity';",
+                              params=list(input$update_default_activity))
+            dbClearResult(q)
+        }
+        
+        # Updating athlete values is more complex
+        # First want to validate they are positive numbers
         new_vals <- data.frame(
             height=input$update_height,
             weight=input$update_weight,
@@ -102,6 +120,8 @@ function(input, output, session) {
         if (any(is.na(new_vals)) || any(new_vals < 0)) validated <- FALSE
         
         if (validated) {
+            # Update DB with the new values, update fitness scores,
+            # and trigger replot of fitness plot
             q <- dbSendStatement(con, "UPDATE athlete SET 
                                     height = ?,
                                     weight = ?,
@@ -135,7 +155,7 @@ function(input, output, session) {
         checkboxGroupInput("activity_type_select",
                            "Activity Type",
                            ACTIVITY_TYPES,
-                           selected=DEFAULT_ACTIVITY)
+                           selected=default_activity())
     })
     
     output$activities <- renderDT({
