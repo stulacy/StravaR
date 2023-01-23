@@ -46,7 +46,7 @@ CREATE TABLE location (
 );
 
 CREATE TABLE athlete (
-  athelete_id INTEGER PRIMARY KEY,
+  athlete_id INTEGER PRIMARY KEY,
   height REAL,
   weight REAL,
   maxHR REAL,

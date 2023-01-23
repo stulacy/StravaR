@@ -14,6 +14,7 @@ library(zoo)
 library(leaflet)
 library(sf)
 library(plotly)
+source("utils.R")
 
 con <- dbConnect(SQLite(), "data/strava.db")
 ACTIVITY_TYPES <- tbl(con, "activity_types") |>
@@ -39,6 +40,8 @@ TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
 
 function(input, output, session) {
     
+    fitness_updated <- reactiveVal(value=FALSE)
+    
     # Get all dates from last 52 weeks
     days_til_sunday <- 7 - wday(today(), week_start=1)
     first_day <- today() + days(days_til_sunday) - weeks(52) + days(1)
@@ -57,6 +60,76 @@ function(input, output, session) {
     # Work out the week number with first months
     all_dates[ wday == 1, month := month(date)]
     month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
+    
+    update_athlete_modal <- function(failed=FALSE) {
+        curr_settings <- tbl(con, "athlete") |>
+                            collect() |>
+                            as.list()
+        modalDialog(
+            title = "Update settings",
+            textInput("update_height", "Height (cm)", value=curr_settings$height),
+            textInput("update_weight", "Weight (cm)", value=curr_settings$weight),
+            textInput("update_maxHR", "Maximum heartrate (bpm)", value=curr_settings$maxHR),
+            textInput("update_restHR", "Resting heartrate (bpm)", value=curr_settings$restHR),
+            textInput("update_thresholdHR", "Threshold heartrate (bpm)", value=curr_settings$thresholdHR),
+            if (failed) {
+                div(tags$b("Values must be positive numbers", style="color: red;"))
+            },
+            easyClose = TRUE,
+            fade=FALSE,
+            footer=tagList(
+                modalButton("Cancel"),
+                actionButton("update_settings", "Update settings and recalculate training scores")
+            )
+        )
+    }
+    
+    observeEvent(input$settings, {
+        showModal(update_athlete_modal())
+    })
+    
+    observeEvent(input$update_settings, {
+        # Update values in DB
+        new_vals <- data.frame(
+            height=input$update_height,
+            weight=input$update_weight,
+            maxHR=input$update_maxHR,
+            restHR=input$update_restHR,
+            thresholdHR=input$update_thresholdHR
+        )
+        validated <- TRUE
+        new_vals <- mutate_all(new_vals, as.numeric)
+        if (any(is.na(new_vals)) || any(new_vals < 0)) validated <- FALSE
+        
+        if (validated) {
+            q <- dbSendStatement(con, "UPDATE athlete SET 
+                                    height = ?,
+                                    weight = ?,
+                                    maxHR = ?,
+                                    restHR = ?,
+                                    thresholdHR = ?
+                                  WHERE athlete_id = 1;",
+                              params=as.list(unname(new_vals)))
+            dbClearResult(q)
+            # TODO should refactor into function
+            fit <- hr <- tbl(con, "heartrate") |> collect() |> as.data.table()
+            hrss <- fit[!is.na(heartrate), 
+                         .(hrss = calculate_hrss(heartrate,
+                                                 time,
+                                                 new_vals$maxHR,
+                                                 new_vals$restHR,
+                                                 new_vals$thresholdHR,
+                                                 )), 
+                             by=.(activity_id)]
+            q <- dbSendStatement(con, "DELETE FROM fitness;")
+            dbClearResult(q)
+            dbAppendTable(con, "fitness", hrss)
+            fitness_updated(TRUE)  # Triggers a redraw of the training plot
+            removeModal()
+        } else {
+            showModal(update_athlete_modal(failed=TRUE))
+        }
+    })
     
     output$activity_type_select_wrapper <- renderUI({
         checkboxGroupInput("activity_type_select",
@@ -167,7 +240,11 @@ function(input, output, session) {
         dt[, .(distance = sum(distance)), by=date]
     })
     
-    hrss <- eventReactive(input$activity_type_select, {
+    hrss <- eventReactive({
+            input$activity_type_select
+            fitness_updated()
+        }, 
+        {
         types <- input$activity_type_select
         hrss <- tbl(con, "fitness") |>
                         inner_join(tbl(con, "activities"), by="activity_id") |>
@@ -200,6 +277,7 @@ function(input, output, session) {
             hrss$Fatigue[i] <- prev_fatigue + (this_hrss - prev_fatigue)*(1-exp(-1/7))
             hrss$Form[i] <- prev_fitness - prev_fatigue
         }
+        fitness_updated(FALSE)
         hrss
     })
     
