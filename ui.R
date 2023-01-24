@@ -7,7 +7,10 @@ library(leaflet)
 library(plotly)
 
 dashboardPage(
-    dashboardHeader(title="StravaR"),
+    dashboardHeader(title="StravaR",
+                    tags$li(actionLink("settings", label = "", icon = icon("gear")),
+                            class = "dropdown")
+    ),
     dashboardSidebar(
         sidebarMenu(
             menuItem("Activities", tabName = "data", icon = icon("dashboard")),
