@@ -1,5 +1,6 @@
 library(shiny)
 library(shinyjs)
+library(shinyBS)
 library(shinydashboard)
 library(shinycssloaders)
 library(DT)
@@ -24,6 +25,10 @@ dashboardPage(
     ),
     dashboardBody(
         useShinyjs(),
+        bsTooltip(id = "refresh", 
+                  title = "Sync activities from Strava"),
+        bsTooltip(id = "settings", 
+                  title = "Update athlete and app settings"),
         tabItems(
             tabItem(tabName = "data",
                     fluidRow(
