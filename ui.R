@@ -8,6 +8,8 @@ library(plotly)
 
 dashboardPage(
     dashboardHeader(title="StravaR",
+                    tags$li(actionLink("refresh", label = "", icon = icon("arrows-rotate")),
+                            class = "dropdown"),
                     tags$li(actionLink("settings", label = "", icon = icon("gear")),
                             class = "dropdown")
     ),

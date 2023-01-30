@@ -14,6 +14,7 @@ library(zoo)
 library(leaflet)
 library(sf)
 library(plotly)
+library(httr)
 source("utils.R")
 
 con <- dbConnect(SQLite(), "data/strava.db")
@@ -35,9 +36,84 @@ TRAINING_BANDS[, c("upper", "lower") := .(FORM_OFFSET - upper,
                                  FORM_OFFSET - lower)]
 TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
 
+strava_auth <- function() {
+    strava_app <- oauth_app(appname = "FitViz", key = Sys.getenv("FITVIZ_CLIENTID"), 
+                            secret = Sys.getenv("FITVIZ_SECRET"))  
+    
+    strava_end <- oauth_endpoint(
+        #request = "https://www.strava.com/oauth/authorize?",
+        authorize = "https://www.strava.com/oauth/authorize",
+        access = "https://www.strava.com/oauth/token")
+    
+    res <- oauth2.0_token(endpoint = strava_end, 
+                   app = strava_app, 
+                   scope = "activity:read_all", 
+                   cache = TRUE)
+    auth_header <- add_headers(Authorization=sprintf("Bearer %s", res$credentials$access_token))
+}
+
+get_recent_activities_meta <- function(auth) {
+    # most recent activity
+    most_recent_activity <- tbl(con, "activities") |>
+                                slice_max(start_time, n=1) |>
+                                pull(start_time)
+    # Get list of all activities
+    page_size <- 30
+    i <- 1
+    results <- list()
+    while (TRUE) {
+        all_activities <- GET("https://www.strava.com/api/v3/athlete/activities", auth,
+                              query=list(after=most_recent_activity, per_page=page_size,
+                                         page=i))
+        page_activities <- content(all_activities)
+        results <- append(results, page_activities)
+        if (length(page_activities) < page_size) break
+        i <- i+1
+    }
+    # Flatten into data.table
+    cols <- c(activity_id='id', 
+              activity_type='type',
+              name='name',
+              start_time='start_date',
+              distance='distance',
+              duration='elapsed_time',
+              elevation='total_elevation_gain'
+              )
+    dt <- rbindlist(lapply(results, function(x) x[cols]))
+    setnames(dt, unname(cols), names(cols))
+    dt[, c('start_time', 'distance', 'duration') := .(as_datetime(start_time),
+                                          distance / 1000,
+                                          duration)]
+    dt
+}
+
+# For each activity, get the associated stream
+get_stream <- function(id, auth) {
+    raw <- GET(sprintf("https://www.strava.com/api/v3/activities/%s/streams/heartrate,latlng", id), 
+                  auth, query=list(key_by_type='true', series_type='time'))
+    res <- content(raw)
+    dt <- data.table(
+        activity_id=id,
+        time_offset = as.numeric(res$time$data))
+    
+    if ("heartrate" %in% names(res)) {
+        dt[, heartrate := as.numeric(res$heartrate$data)]
+    }
+    if ("latlng" %in% names(res)) {
+        dt[, latlng := res$latlng$data]
+        dt[, c('lat', 'lon') := .(as.numeric(map(latlng, function(x) x[[1]])),
+                                   as.numeric(map(latlng, function(x) x[[2]])))]
+        dt[, latlng := NULL]
+    }
+    
+    dt
+}
+
+
 function(input, output, session) {
     
     fitness_updated <- reactiveVal(value=FALSE)
+    activities_synced <- reactiveVal(value=0)
     initial_default_activity <- tbl(con, "config") |>
                             filter(property == 'default_activity') |>
                             pull(value)
@@ -90,8 +166,50 @@ function(input, output, session) {
         )
     }
     
+    sync <- function(failed=FALSE) {
+        # Create a Progress object
+        withProgress(message="Syncing activities from Strava",
+                     detail="Authenticating...",
+                     value=0, {
+            creds <- strava_auth()
+            
+            setProgress(value=.2, detail="Finding new activities")
+            new_activities <- get_recent_activities_meta(creds)
+            setProgress(value=.4, detail="Downloading heartrate and gps")
+            streams <- rbindlist(lapply(new_activities$activity_id, get_stream, creds), fill=TRUE)
+            # Add on starting time to go from relative to absolute
+            streams <- streams[new_activities, .(activity_id, heartrate, lat, lon, time=start_time + time_offset), on=.(activity_id)]
+            # Separate into heartrate and location
+            hr <- streams[ !is.na(heartrate), .(activity_id, time, heartrate)]
+            location <- streams[ !is.na(lat) & !is.na(lon), .(activity_id, time, lat, lon)]
+            
+            setProgress(value=.6, detail="Calculating fitness scores")
+            # Calculate fitness scores
+            athlete <- tbl(con, "athlete") |> collect()
+            hrss <- hr[, .(hrss = calculate_hrss(heartrate,
+                                                 time,
+                                                 athlete$maxHR,
+                                                 athlete$restHR,
+                                                 athlete$thresholdHR,
+                                                 )), 
+                             by=.(activity_id)]
+            
+            # Update DB!
+            setProgress(value=.8, detail="Updating DB")
+            dbAppendTable(con, "activities", new_activities)
+            dbAppendTable(con, "heartrate", hr)
+            dbAppendTable(con, "location", location)
+            dbAppendTable(con, "fitness", hrss)
+        })
+        activities_synced(activities_synced() + 1)
+    }
+    
     observeEvent(input$settings, {
         showModal(update_athlete_modal())
+    })
+    
+    observeEvent(input$refresh, {
+        sync()
     })
     
     observeEvent(input$update_settings, {
@@ -158,8 +276,7 @@ function(input, output, session) {
                            selected=default_activity())
     })
     
-    output$activities <- renderDT({
-        req(input$activity_type_select)
+    activities_summary <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
         tbl(con, "activities") |>
             filter(activity_type %in% types) |>
@@ -168,35 +285,40 @@ function(input, output, session) {
                    name = sprintf("<a href='https://strava.com/activities/%s'>%s</a>", 
                                   activity_id, 
                                   name),
-                   Date = as_date(start_time),
+                   date = as_date(start_time),
                    distance = round(distance, 1),
                    elevation = round(elevation),
                    duration = as.period(duration(duration, units="secs")),
                    dur_fmt = sprintf("%dh %dm %ds", hour(duration),
                                      minute(duration),
-                                     second(duration)),
+                                     round(second(duration))),
                    dur_fmt = gsub("0h ", "", dur_fmt)) |>
             arrange(desc(start_time)) |>
             select(
-                Date,
+                date,
+                activity_type,
+                name,
+                distance,
+                dur_fmt,
+                elevation
+           )
+    }, ignoreInit = TRUE)
+    
+    output$activities <- renderDT({
+        activities_summary() |>
+            rename(
+                Date=date,
                 Type=activity_type,
                 Name=name,
                 `Distance (km)`=distance,
                 Duration=dur_fmt,
                 `Elevation (m)`=elevation
-           )
+               )
     }, escape=FALSE)
     
-    output$calendar <- renderPlotly({
-        # TODO Make dataset reactive on input, so this render is just 
-        # dependent on the dataset
-        req(input$activity_type_select)
-        type <- input$activity_type_select
-        df_raw <- tbl(con, "activities") |>
-            filter(start_time >= local(as.numeric(as_datetime(first_day))),
-                   activity_type %in% type) |>
-            collect() |>
-            mutate(date = as_date(as_datetime(start_time))) |>
+    activities_calendar <- eventReactive(activities_summary(), {
+        df_raw <- activities_summary() |>
+            filter(date >= first_day) |>
             setDT()
         df <- df_raw[, .(distance = sum(distance)), by=.(date)]
         
@@ -208,6 +330,13 @@ function(input, output, session) {
         setorder(df_wide, -wday)
         setcolorder(df_wide, c("wday", paste("week", 0:51, sep="_")))
         setnafill(df_wide, fill=0)
+        df_wide
+    }, ignoreInit = FALSE)
+    
+    output$calendar <- renderPlotly({
+        df_raw <- activities_summary() |> filter(date >= first_day) |> as.data.table()
+        df_wide <- activities_calendar()
+        
         week_avg <- df_raw[ date > (today() - days(7)), .(mu=round(mean(distance)))]$mu
         if (length(week_avg) == 0) week_avg <- 0
         
@@ -222,7 +351,6 @@ function(input, output, session) {
             ygap=2,
             showscale=FALSE
         ) |>
-            config(displayModeBar=FALSE) |>
             layout(yaxis=list(scaleanchor='x', scaleratio=1,
                               zeroline=FALSE,
                               constrain="domain",
@@ -241,15 +369,16 @@ function(input, output, session) {
                                          "Oct", "Nov", "Dec")),
                    title=sprintf("%d %ss in the last year with an average of %dkm\n%d in the last week with an average of %dkm", 
                                  nrow(df_raw),
-                                 tolower(paste(type, collapse='+')),
+                                 tolower(paste(unique(df_raw$activity_type), collapse='+')),
                                  round(mean(df_raw$distance)),
                                  sum(df_raw$date > (today() - days(7))),
                                  week_avg
                                  )
-                   )
+                   ) |>
+            plotly::config(displayModeBar=FALSE) 
     })
     
-    mileage_df <- eventReactive(input$activity_type_select, {
+    mileage_df <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
         dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
@@ -263,6 +392,7 @@ function(input, output, session) {
     hrss <- eventReactive({
             input$activity_type_select
             fitness_updated()
+            activities_synced()
         }, 
         {
         types <- input$activity_type_select
@@ -301,7 +431,7 @@ function(input, output, session) {
         hrss
     })
     
-    routes_df <- eventReactive(input$activity_type_select, {
+    routes_df <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
         dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
