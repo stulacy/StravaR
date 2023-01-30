@@ -503,7 +503,7 @@ function(input, output, session) {
         
         ggplotly(p, tooltip=c('colour', 'x', 'y')) |>
             layout(yaxis = list(hoverformat = '.5f'),
-                   xaxis = list(title=""))
+                   xaxis = list(title="", tickformat="%b"))
     })
     
     output$mileage_weekly <- renderPlotly({
