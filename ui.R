@@ -1,5 +1,6 @@
 library(shiny)
 library(shinyjs)
+library(shinyBS)
 library(shinydashboard)
 library(shinycssloaders)
 library(DT)
@@ -8,6 +9,8 @@ library(plotly)
 
 dashboardPage(
     dashboardHeader(title="StravaR",
+                    tags$li(actionLink("refresh", label = "", icon = icon("arrows-rotate")),
+                            class = "dropdown"),
                     tags$li(actionLink("settings", label = "", icon = icon("gear")),
                             class = "dropdown")
     ),
@@ -22,6 +25,10 @@ dashboardPage(
     ),
     dashboardBody(
         useShinyjs(),
+        bsTooltip(id = "refresh", 
+                  title = "Sync activities from Strava"),
+        bsTooltip(id = "settings", 
+                  title = "Update athlete and app settings"),
         tabItems(
             tabItem(tabName = "data",
                     fluidRow(

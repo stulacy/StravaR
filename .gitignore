@@ -9,3 +9,4 @@ data/raw
 *.Rproj
 .Rproj.user/
 plots/
+.httr-oauth
