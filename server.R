@@ -80,6 +80,8 @@ get_recent_activities_meta <- function(auth) {
               elevation='total_elevation_gain'
               )
     dt <- rbindlist(lapply(results, function(x) x[cols]))
+    if (nrow(dt) == 0) return(dt)
+    
     setnames(dt, unname(cols), names(cols))
     dt[, c('start_time', 'distance', 'duration') := .(as_datetime(start_time),
                                           distance / 1000,
@@ -166,7 +168,7 @@ function(input, output, session) {
         )
     }
     
-    sync <- function(failed=FALSE) {
+    sync <- function() {
         # Create a Progress object
         withProgress(message="Syncing activities from Strava",
                      detail="Authenticating...",
@@ -175,6 +177,11 @@ function(input, output, session) {
             
             setProgress(value=.2, detail="Finding new activities")
             new_activities <- get_recent_activities_meta(creds)
+            if (nrow(new_activities) == 0) {
+                showNotification("No recent activities found!",
+                                 type="error", duration=3)
+                return()
+            }
             setProgress(value=.4, detail="Downloading heartrate and gps")
             streams <- rbindlist(lapply(new_activities$activity_id, get_stream, creds), fill=TRUE)
             # Add on starting time to go from relative to absolute
@@ -200,8 +207,10 @@ function(input, output, session) {
             dbAppendTable(con, "heartrate", hr)
             dbAppendTable(con, "location", location)
             dbAppendTable(con, "fitness", hrss)
+            activities_synced(activities_synced() + 1)
+            showNotification(sprintf("Synced %d activities!", nrow(new_activities)),
+                             type="message", duration=3)
         })
-        activities_synced(activities_synced() + 1)
     }
     
     observeEvent(input$settings, {
