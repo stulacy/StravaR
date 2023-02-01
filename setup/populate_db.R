@@ -87,6 +87,7 @@ hrss <- fit_data[!is.na(heartrate),
 
 ################ Populate DB
 con <- dbConnect(SQLite(), db_fn)
+dbAppendTable(con, "activity_type", all_activities |> distinct(activity_type))
 dbAppendTable(con, "activities", all_activities |> select(-filename_id))
 dbAppendTable(con, "heartrate", fit_data[ !is.na(heartrate), .(activity_id, time, heartrate)])
 dbAppendTable(con, "location", fit_data[ !is.na(lon) & !is.na(lat), .(activity_id, time, lon, lat)])

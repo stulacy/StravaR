@@ -2,9 +2,6 @@ CREATE TABLE activity_types (
   activity_type TEXT PRIMARY KEY
 );
 
-INSERT INTO activity_types VALUES('Run');
-INSERT INTO activity_types VALUES('Ride');
-
 CREATE TABLE config (
     property TEXT,
     value TEXT
@@ -53,3 +50,6 @@ CREATE TABLE athlete (
   restHR REAL,
   thresholdHR REAL
 );
+
+INSERT INTO activity_types VALUES("Run");
+INSERT INTO activity_types VALUES("Ride");

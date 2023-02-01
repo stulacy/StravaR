@@ -18,8 +18,6 @@ library(httr)
 source("utils.R")
 
 con <- dbConnect(SQLite(), "data/strava.db")
-ACTIVITY_TYPES <- tbl(con, "activity_types") |>
-                    pull(activity_type)
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
 FORM_OFFSET <- 40
@@ -111,9 +109,36 @@ get_stream <- function(id, auth) {
     dt
 }
 
+create_db <- function(con) {
+    setup_sql <- read_file("setup/schema.sql")
+    queries <- trimws(stringr::str_split_1(setup_sql, ";"))
+    queries <- purrr::keep(queries, function(x) x != '')
+    run_query <- function(q) {
+        res <- dbSendStatement(con, q)
+        dbClearResult(res)
+    }
+    map(queries, run_query)
+}
+
 
 function(input, output, session) {
+    if (length(dbListTables(con)) == 0) {
+        create_db(con)
+        
+        showModal(modalDialog(
+            title = "Initial setup",
+            h4("Let's get things setup!")))
+        
+        # TODO don't do this until click through modal!
+        # TODO Get athlete settings
+        # Can already using functionality from settings
+        
+        # TODO Get strava sync
+        # Can already use refresh functionality
+    }
     
+    ACTIVITY_TYPES <- tbl(con, "activity_types") |>
+                        pull(activity_type)
     fitness_updated <- reactiveVal(value=FALSE)
     activities_synced <- reactiveVal(value=0)
     initial_default_activity <- tbl(con, "config") |>
@@ -203,6 +228,7 @@ function(input, output, session) {
             
             # Update DB!
             setProgress(value=.8, detail="Updating DB")
+            # TODO add any new activity_types
             dbAppendTable(con, "activities", new_activities)
             dbAppendTable(con, "heartrate", hr)
             dbAppendTable(con, "location", location)
@@ -287,7 +313,7 @@ function(input, output, session) {
     
     activities_summary <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
-        tbl(con, "activities") |>
+        df <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             collect() |>
             mutate(start_time = as_datetime(start_time),
@@ -311,6 +337,8 @@ function(input, output, session) {
                 dur_fmt,
                 elevation
            )
+        validate(need(nrow(df) > 0, "No activities found"))
+        df
     }, ignoreInit = TRUE)
     
     output$activities <- renderDT({
@@ -396,6 +424,8 @@ function(input, output, session) {
             setDT()
         dt[, date := as_date(as_datetime(start_time))]
         dt[, .(distance = sum(distance)), by=date]
+        validate(need(nrow(dt) > 0, "No activities found"))
+        dt
     })
     
     hrss <- eventReactive({
@@ -411,6 +441,7 @@ function(input, output, session) {
                         collect() |>
                         mutate(date = as_date(as_datetime(start_time))) |>
                         setDT()
+        validate(need(nrow(hrss) > 0, "No activities found"))
         # Summarise per date
         hrss <- hrss[, .(hrss = sum(hrss)), by=date][order(date)]
         # Make entry for every day as need to run equation everyday as time isn't
@@ -437,7 +468,6 @@ function(input, output, session) {
             hrss$Form[i] <- prev_fitness - prev_fatigue
         }
         fitness_updated(FALSE)
-        hrss
     })
     
     routes_df <- eventReactive(c(input$activity_type_select, activities_synced()), {
@@ -452,6 +482,7 @@ function(input, output, session) {
         dt[, time := as_datetime(time)]
         dt[, date := as_date(time)]
         setorder(dt, time)
+        validate(need(nrow(dt) > 0, "No activities found"))
         dt
     })
     
