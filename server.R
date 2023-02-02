@@ -50,11 +50,108 @@ strava_auth <- function() {
     auth_header <- add_headers(Authorization=sprintf("Bearer %s", res$credentials$access_token))
 }
 
+insert_or_update_default_activity <- function(value) {
+    default_exists <- nrow(tbl(con, "config") |> collect() |> filter(property == 'default_activity')) > 0
+    if (default_exists) {
+        q <- "UPDATE config SET value = ? WHERE property = 'default_activity'"
+    } else {
+        q <- "INSERT INTO config (property, value) VALUES ('default_activity', ?)"
+    }
+    res <- dbSendStatement(con, q, params=list(value))
+    dbClearResult(res)
+}
+
+insert_or_update_athlete <- function(settings) {
+    settings <- mutate_all(settings, as.numeric)
+    if (any(is.na(settings)) || any(settings < 0)) {
+        return(FALSE)
+    }
+    
+    athlete_exists <- nrow(tbl(con, "athlete") |> filter(athlete_id==1) |> collect()) > 0
+    
+    if (athlete_exists) {
+        q <- "UPDATE athlete 
+              SET height = ?,
+                  weight = ?,
+                  maxHR = ?,
+                  restHR = ?,
+                  thresholdHR = ?
+              WHERE athlete_id = 1;"
+    } else {
+        q <- "INSERT INTO athlete (height, weight, maxHR, restHR, thresholdHR)
+              VALUES (?, ?, ?, ?, ?)"
+    }
+    res <- dbSendStatement(con, q, params=as.list(unname(settings)))
+    dbClearResult(res)
+    TRUE
+}
+
+update_fitness <- function() {
+    fit <- hr <- tbl(con, "heartrate") |> collect() |> as.data.table()
+    athlete <- tbl(con, "athlete") |> filter(athlete_id == 1) |> collect()
+    hrss <- fit[!is.na(heartrate), 
+                 .(hrss = calculate_hrss(heartrate,
+                                         time,
+                                         athlete$maxHR,
+                                         athlete$restHR,
+                                         athlete$thresholdHR,
+                                         )), 
+                     by=.(activity_id)]
+    q <- dbSendStatement(con, "DELETE FROM fitness;")
+    dbClearResult(q)
+    dbAppendTable(con, "fitness", hrss)
+}
+
+update_athlete_modal <- function(default_activity, failed=FALSE, first_time=FALSE) {
+    if (first_time) {
+        title <- "Configure app"
+        easy_close <- FALSE
+        footer <- tagList(
+            actionButton("insert_settings", "Continue")
+        )
+    } else {
+        title <- "Update settings"
+        easy_close <- TRUE
+        footer <- tagList(
+            modalButton("Cancel"),
+            actionButton("update_settings", "Update settings and recalculate training scores")
+        )
+        
+    }
+    
+    curr_settings <- tbl(con, "athlete") |>
+                        collect() |>
+                        as.list()
+    activity_types <- tbl(con, "activity_types") |> pull(activity_type)
+    modalDialog(
+        title = title,
+        h4("Athlete Settings"),
+        textInput("update_height", "Height (cm)", value=curr_settings$height),
+        textInput("update_weight", "Weight (kg)", value=curr_settings$weight),
+        textInput("update_maxHR", "Maximum heartrate (bpm)", value=curr_settings$maxHR),
+        textInput("update_restHR", "Resting heartrate (bpm)", value=curr_settings$restHR),
+        textInput("update_thresholdHR", "Threshold heartrate (bpm)", value=curr_settings$thresholdHR),
+        if (failed) {
+            div(tags$b("Values must be positive numbers", style="color: red;"))
+        },
+        hr(),
+        h4("App Settings"),
+        radioButtons("update_default_activity", "Default activity",
+                     choices=activity_types, selected=default_activity),
+        easyClose =easy_close,
+        fade=FALSE,
+        footer=footer
+    )
+}
+
 get_recent_activities_meta <- function(auth) {
     # most recent activity
     most_recent_activity <- tbl(con, "activities") |>
                                 slice_max(start_time, n=1) |>
                                 pull(start_time)
+    if (length(most_recent_activity) == 0) {
+        most_recent_activity <- as_datetime("1900-01-01")
+    }
     # Get list of all activities
     page_size <- 30
     i <- 1
@@ -77,6 +174,9 @@ get_recent_activities_meta <- function(auth) {
               duration='elapsed_time',
               elevation='total_elevation_gain'
               )
+    if (length(results) == 0 || "errors" %in% names(results)) {
+        return(setNames(data.table(matrix(nrow = 0, ncol = length(cols))), names(cols)))
+    }
     dt <- rbindlist(lapply(results, function(x) x[cols]))
     if (nrow(dt) == 0) return(dt)
     
@@ -120,31 +220,93 @@ create_db <- function(con) {
     map(queries, run_query)
 }
 
+sync <- function() {
+    has_updates <- TRUE
+    # Create a Progress object
+    withProgress(message="Syncing activities from Strava",
+                 detail="Authenticating...",
+                 value=0, {
+        # TODO authorisation isn't working
+        creds <- strava_auth()
+        
+        setProgress(value=.2, detail="Finding new activities")
+        new_activities <- get_recent_activities_meta(creds)
+        if (nrow(new_activities) == 0) {
+            showNotification("No recent activities found!",
+                             type="error", duration=3)
+            has_updates <- FALSE
+            return()  # Only returns from withProgress
+        }
+        setProgress(value=.4, detail="Downloading heartrate and gps")
+        streams <- rbindlist(lapply(new_activities$activity_id, get_stream, creds), fill=TRUE)
+        # Add on starting time to go from relative to absolute
+        streams <- streams[new_activities, .(activity_id, heartrate, lat, lon, time=start_time + time_offset), on=.(activity_id)]
+        # Separate into heartrate and location
+        hr <- streams[ !is.na(heartrate), .(activity_id, time, heartrate)]
+        location <- streams[ !is.na(lat) & !is.na(lon), .(activity_id, time, lat, lon)]
+        
+        setProgress(value=.6, detail="Calculating fitness scores")
+        # Calculate fitness scores
+        athlete <- tbl(con, "athlete") |> collect()
+        hrss <- hr[, .(hrss = calculate_hrss(heartrate,
+                                             time,
+                                             athlete$maxHR,
+                                             athlete$restHR,
+                                             athlete$thresholdHR,
+                                             )), 
+                         by=.(activity_id)]
+        
+        # Update DB!
+        setProgress(value=.8, detail="Updating DB")
+        # Add any new activity types
+        act_types <- unique(new_activities$activity_type)
+        curr_act_types <- tbl(con, "activity_types") |> pull(activity_types)
+        new_types <- setdiff(act_types, curr_act_types)
+        if (length(new_types) > 0) {
+            dbAppendTable(con, "activity_types", data.frame(activity_type=new_types))
+        }
+        dbAppendTable(con, "activities", new_activities)
+        dbAppendTable(con, "heartrate", hr)
+        dbAppendTable(con, "location", location)
+        dbAppendTable(con, "fitness", hrss)
+        showNotification(sprintf("Synced %d activities!", nrow(new_activities)),
+                         type="message", duration=3)
+    })
+    has_updates
+}
 
 function(input, output, session) {
     if (length(dbListTables(con)) == 0) {
         create_db(con)
-        
-        showModal(modalDialog(
-            title = "Initial setup",
-            h4("Let's get things setup!")))
-        
-        # TODO don't do this until click through modal!
-        # TODO Get athlete settings
-        # Can already using functionality from settings
-        
-        # TODO Get strava sync
-        # Can already use refresh functionality
+    }
+    n_activities <- tbl(con, "activities") |> count() |> pull()
+    if (n_activities == 0) {
+        showModal(
+            modalDialog(
+                title = "Initial setup",
+                h4("Let's get things setup!"),
+                easyClose = FALSE,
+                fade=FALSE,
+                footer=tagList(
+                    actionButton("show_setup_athlete", "Continue")
+                )
+            )
+        )
     }
     
-    ACTIVITY_TYPES <- tbl(con, "activity_types") |>
-                        pull(activity_type)
     fitness_updated <- reactiveVal(value=FALSE)
     activities_synced <- reactiveVal(value=0)
     initial_default_activity <- tbl(con, "config") |>
                             filter(property == 'default_activity') |>
                             pull(value)
+    if (length(initial_default_activity) == 0) {
+        initial_default_activity <- 'Run'
+    }
     default_activity <- reactiveVal(value=initial_default_activity)
+    
+    observeEvent(input$show_setup_athlete, {
+        showModal(update_athlete_modal(default_activity(), first_time = TRUE))
+    })
     
     # Get all dates from last 52 weeks
     days_til_sunday <- 7 - wday(today(), week_start=1)
@@ -165,149 +327,85 @@ function(input, output, session) {
     all_dates[ wday == 1, month := month(date)]
     month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
     
-    update_athlete_modal <- function(failed=FALSE) {
-        curr_settings <- tbl(con, "athlete") |>
-                            collect() |>
-                            as.list()
-        modalDialog(
-            title = "Update settings",
-            h4("Athlete Settings"),
-            textInput("update_height", "Height (cm)", value=curr_settings$height),
-            textInput("update_weight", "Weight (cm)", value=curr_settings$weight),
-            textInput("update_maxHR", "Maximum heartrate (bpm)", value=curr_settings$maxHR),
-            textInput("update_restHR", "Resting heartrate (bpm)", value=curr_settings$restHR),
-            textInput("update_thresholdHR", "Threshold heartrate (bpm)", value=curr_settings$thresholdHR),
-            if (failed) {
-                div(tags$b("Values must be positive numbers", style="color: red;"))
-            },
-            hr(),
-            h4("App Settings"),
-            radioButtons("update_default_activity", "Default activity",
-                         choices=ACTIVITY_TYPES, selected=default_activity()),
-            easyClose = TRUE,
-            fade=FALSE,
-            footer=tagList(
-                modalButton("Cancel"),
-                actionButton("update_settings", "Update settings and recalculate training scores")
-            )
-        )
-    }
-    
-    sync <- function() {
-        # Create a Progress object
-        withProgress(message="Syncing activities from Strava",
-                     detail="Authenticating...",
-                     value=0, {
-            creds <- strava_auth()
-            
-            setProgress(value=.2, detail="Finding new activities")
-            new_activities <- get_recent_activities_meta(creds)
-            if (nrow(new_activities) == 0) {
-                showNotification("No recent activities found!",
-                                 type="error", duration=3)
-                return()
-            }
-            setProgress(value=.4, detail="Downloading heartrate and gps")
-            streams <- rbindlist(lapply(new_activities$activity_id, get_stream, creds), fill=TRUE)
-            # Add on starting time to go from relative to absolute
-            streams <- streams[new_activities, .(activity_id, heartrate, lat, lon, time=start_time + time_offset), on=.(activity_id)]
-            # Separate into heartrate and location
-            hr <- streams[ !is.na(heartrate), .(activity_id, time, heartrate)]
-            location <- streams[ !is.na(lat) & !is.na(lon), .(activity_id, time, lat, lon)]
-            
-            setProgress(value=.6, detail="Calculating fitness scores")
-            # Calculate fitness scores
-            athlete <- tbl(con, "athlete") |> collect()
-            hrss <- hr[, .(hrss = calculate_hrss(heartrate,
-                                                 time,
-                                                 athlete$maxHR,
-                                                 athlete$restHR,
-                                                 athlete$thresholdHR,
-                                                 )), 
-                             by=.(activity_id)]
-            
-            # Update DB!
-            setProgress(value=.8, detail="Updating DB")
-            # TODO add any new activity_types
-            dbAppendTable(con, "activities", new_activities)
-            dbAppendTable(con, "heartrate", hr)
-            dbAppendTable(con, "location", location)
-            dbAppendTable(con, "fitness", hrss)
-            activities_synced(activities_synced() + 1)
-            showNotification(sprintf("Synced %d activities!", nrow(new_activities)),
-                             type="message", duration=3)
-        })
-    }
-    
     observeEvent(input$settings, {
-        showModal(update_athlete_modal())
+        showModal(update_athlete_modal(default_activity()))
     })
     
     observeEvent(input$refresh, {
-        sync()
+        if (sync()) {
+            activities_synced(activities_synced() + 1)
+        }
     })
     
-    observeEvent(input$update_settings, {
-        # Update default activity if changed, needing to update:
-        # this session (UI) and BD
-        if (input$update_default_activity != default_activity()) {
-            default_activity(input$update_default_activity)
-            q <- dbSendStatement(con, "UPDATE config SET 
-                                    value = ?
-                                  WHERE property = 'default_activity';",
-                              params=list(input$update_default_activity))
-            dbClearResult(q)
+    observeEvent(input$first_sync, {
+        removeModal()
+        if (sync()) {
+            activities_synced(activities_synced() + 1)
         }
+    })
+    
+    observeEvent(input$insert_settings, {
+        default_activity(input$update_default_activity)
+        insert_or_update_default_activity(input$update_default_activity)
         
-        # Updating athlete values is more complex
-        # First want to validate they are positive numbers
-        new_vals <- data.frame(
+        athlete_inputs <- data.frame(
             height=input$update_height,
             weight=input$update_weight,
             maxHR=input$update_maxHR,
             restHR=input$update_restHR,
             thresholdHR=input$update_thresholdHR
         )
-        validated <- TRUE
-        new_vals <- mutate_all(new_vals, as.numeric)
-        if (any(is.na(new_vals)) || any(new_vals < 0)) validated <- FALSE
         
-        if (validated) {
-            # Update DB with the new values, update fitness scores,
-            # and trigger replot of fitness plot
-            q <- dbSendStatement(con, "UPDATE athlete SET 
-                                    height = ?,
-                                    weight = ?,
-                                    maxHR = ?,
-                                    restHR = ?,
-                                    thresholdHR = ?
-                                  WHERE athlete_id = 1;",
-                              params=as.list(unname(new_vals)))
-            dbClearResult(q)
-            # TODO should refactor into function
-            fit <- hr <- tbl(con, "heartrate") |> collect() |> as.data.table()
-            hrss <- fit[!is.na(heartrate), 
-                         .(hrss = calculate_hrss(heartrate,
-                                                 time,
-                                                 new_vals$maxHR,
-                                                 new_vals$restHR,
-                                                 new_vals$thresholdHR,
-                                                 )), 
-                             by=.(activity_id)]
-            q <- dbSendStatement(con, "DELETE FROM fitness;")
-            dbClearResult(q)
-            dbAppendTable(con, "fitness", hrss)
-            fitness_updated(TRUE)  # Triggers a redraw of the training plot
-            removeModal()
-        } else {
-            showModal(update_athlete_modal(failed=TRUE))
+        validated <- insert_or_update_athlete(athlete_inputs)
+        if (!validated) {
+            showModal(update_athlete_modal(default_activity(), failed=TRUE, first_time = TRUE))
+            return()
         }
+        
+        # Now prompt to sync data
+        showModal(
+            modalDialog(
+                title = "Sync with Strava",
+                p("Great, now let's get some data! Press the button below and follow the prompts to authorise FitViz to access your Strava data."),
+                easyClose = FALSE,
+                fade=FALSE,
+                footer=tagList(
+                    actionButton("first_sync", "Sync data")
+                )
+            )
+        )
+    })
+    
+    observeEvent(input$update_settings, {
+        # Update default activity
+        default_activity(input$update_default_activity)
+        insert_or_update_default_activity(input$update_default_activity)
+        
+        # Update athlete
+        athlete_inputs <- data.frame(
+            height=input$update_height,
+            weight=input$update_weight,
+            maxHR=input$update_maxHR,
+            restHR=input$update_restHR,
+            thresholdHR=input$update_thresholdHR
+        )
+        validated <- insert_or_update_athlete(athlete_inputs)
+        if (!validated) {
+            showModal(update_athlete_modal(default_activity(), failed=TRUE))
+            return()
+        }
+        
+        # Update fitness
+        update_fitness()
+        fitness_updated(TRUE)  # Triggers a redraw of the training plot
+        removeModal()
     })
     
     output$activity_type_select_wrapper <- renderUI({
+        activity_types <- tbl(con, "activity_types") |> pull(activity_type)
         checkboxGroupInput("activity_type_select",
                            "Activity Type",
-                           ACTIVITY_TYPES,
+                           activity_types,
                            selected=default_activity())
     })
     
