@@ -7,7 +7,7 @@ library(DT)
 library(leaflet)
 library(plotly)
 
-dashboardPage(
+ui <- dashboardPage(
     dashboardHeader(title="StravaR",
                     tags$li(actionLink("refresh", label = "", icon = icon("arrows-rotate")),
                             class = "dropdown"),
@@ -24,6 +24,7 @@ dashboardPage(
         )
     ),
     dashboardBody(
+        uiOutput("redirect_js"),
         useShinyjs(),
         bsTooltip(id = "refresh", 
                   title = "Sync activities from Strava"),

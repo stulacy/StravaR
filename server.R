@@ -17,6 +17,24 @@ library(plotly)
 library(httr)
 source("utils.R")
 
+PORT <- 8100
+options(shiny.port=PORT)
+APP_URL <- sprintf("http://localhost:%d/", PORT)
+
+STRAVA_APP <- oauth_app(appname = "FitViz", 
+                        key = Sys.getenv("FITVIZ_CLIENTID"), 
+                        redirect_uri = APP_URL,
+                        secret = Sys.getenv("FITVIZ_SECRET"))  
+STRAVA_END <- oauth_endpoint(
+    #request = "https://www.strava.com/oauth/authorize?",
+    authorize = "https://www.strava.com/oauth/authorize",
+    access = "https://www.strava.com/oauth/token")
+STRAVA_SCOPE <- "activity:read_all"
+STRAVA_URL <- oauth2.0_authorize_url(STRAVA_END, STRAVA_APP, scope = STRAVA_SCOPE)
+REDIRECT_STRAVA_AUTH <- sprintf("Shiny.addCustomMessageHandler('redirect_strava', function(message) {window.location = '%s';});", 
+                                STRAVA_URL)
+OAUTH_CACHE <- ".httr-oauth"
+
 con <- dbConnect(SQLite(), "data/strava.db")
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
@@ -33,22 +51,6 @@ TRAINING_BANDS <- data.table(
 TRAINING_BANDS[, c("upper", "lower") := .(FORM_OFFSET - upper,
                                  FORM_OFFSET - lower)]
 TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
-
-strava_auth <- function() {
-    strava_app <- oauth_app(appname = "FitViz", key = Sys.getenv("FITVIZ_CLIENTID"), 
-                            secret = Sys.getenv("FITVIZ_SECRET"))  
-    
-    strava_end <- oauth_endpoint(
-        #request = "https://www.strava.com/oauth/authorize?",
-        authorize = "https://www.strava.com/oauth/authorize",
-        access = "https://www.strava.com/oauth/token")
-    
-    res <- oauth2.0_token(endpoint = strava_end, 
-                   app = strava_app, 
-                   scope = "activity:read_all", 
-                   cache = TRUE)
-    auth_header <- add_headers(Authorization=sprintf("Bearer %s", res$credentials$access_token))
-}
 
 insert_or_update_default_activity <- function(value) {
     default_exists <- nrow(tbl(con, "config") |> collect() |> filter(property == 'default_activity')) > 0
@@ -150,7 +152,7 @@ get_recent_activities_meta <- function(auth) {
                                 slice_max(start_time, n=1) |>
                                 pull(start_time)
     if (length(most_recent_activity) == 0) {
-        most_recent_activity <- as_datetime("1900-01-01")
+        most_recent_activity <- as.numeric(as_datetime("1900-01-01"))
     }
     # Get list of all activities
     page_size <- 30
@@ -160,6 +162,7 @@ get_recent_activities_meta <- function(auth) {
         all_activities <- GET("https://www.strava.com/api/v3/athlete/activities", auth,
                               query=list(after=most_recent_activity, per_page=page_size,
                                          page=i))
+        # TODO error handle non 200!
         page_activities <- content(all_activities)
         results <- append(results, page_activities)
         if (length(page_activities) < page_size) break
@@ -189,6 +192,7 @@ get_recent_activities_meta <- function(auth) {
 
 # For each activity, get the associated stream
 get_stream <- function(id, auth) {
+    # TODO error handle non-200!
     raw <- GET(sprintf("https://www.strava.com/api/v3/activities/%s/streams/heartrate,latlng", id), 
                   auth, query=list(key_by_type='true', series_type='time'))
     res <- content(raw)
@@ -220,25 +224,68 @@ create_db <- function(con) {
     map(queries, run_query)
 }
 
-sync <- function() {
+auth_strava <- function(session) {
+    # Check for cached token
+    cache <- if (file.exists(OAUTH_CACHE)) {
+        readRDS(OAUTH_CACHE)
+    } else {
+        list()
+    }
+    cached_creds <- cache[vapply(cache, function(x) x[['app']][['appname']] == 'FitViz', logical(1))]
+    # Shouldn't have multiple credentials for the same app but just in case
+    if (length(cached_creds) > 1) {
+        return(NULL)
+    }
+    
+    if (length(cached_creds) == 1) {
+        creds <- cached_creds[[1]]
+        # Refresh if expired if possible
+        if (creds$credentials$expires_at < now("UTC")) {
+            if (creds$can_refresh()) {
+                creds$refresh()
+            } else {
+                # Redirect user to authorise app at Strava's end
+                session$sendCustomMessage("redirect_strava", "redirect_strava")
+            }
+        }
+        return(add_headers(Authorization=sprintf("Bearer %s", creds$credentials$access_token)))
+    } else {
+        # Redirect user to authorise app at Strava's end
+        session$sendCustomMessage("redirect_strava", "redirect_strava")
+    }
+}
+
+sync <- function(session) {
     has_updates <- TRUE
     # Create a Progress object
     withProgress(message="Syncing activities from Strava",
                  detail="Authenticating...",
                  value=0, {
-        # TODO authorisation isn't working
-        creds <- strava_auth()
         
-        setProgress(value=.2, detail="Finding new activities")
-        new_activities <- get_recent_activities_meta(creds)
+        auth_header <- auth_strava(session)
+        # TODO Update progress bar more often when actually downloading
+        # I.e. update for each/every 5% streams
+        if (is.null(auth_header)) {
+            showNotification("Error authenticating. Try deleting .httr-oauth and trying again.",
+                             type="error", duration=3)
+            has_updates <- FALSE
+            return()  # Only returns from withProgress
+        }
+        
+        setProgress(value=.1, detail="Finding new activities")
+        new_activities <- get_recent_activities_meta(auth_header)
         if (nrow(new_activities) == 0) {
             showNotification("No recent activities found!",
                              type="error", duration=3)
             has_updates <- FALSE
             return()  # Only returns from withProgress
         }
+        # TODO does this show, or does it quickly get overwritten by the continuing progress bar?
+        showNotification(sprintf("Found %d activities to sync", nrow(new_activities)),
+                         type="success", duration=3)
+        
         setProgress(value=.4, detail="Downloading heartrate and gps")
-        streams <- rbindlist(lapply(new_activities$activity_id, get_stream, creds), fill=TRUE)
+        streams <- rbindlist(lapply(new_activities$activity_id, get_stream, auth_header), fill=TRUE)
         # Add on starting time to go from relative to absolute
         streams <- streams[new_activities, .(activity_id, heartrate, lat, lon, time=start_time + time_offset), on=.(activity_id)]
         # Separate into heartrate and location
@@ -275,12 +322,43 @@ sync <- function() {
     has_updates
 }
 
-function(input, output, session) {
+has_auth_code <- function(params) {
+    # OAuth in Shiny implementation taken from Hadley's gist here:
+    # https://gist.github.com/hadley/144c406871768d0cbe66b0b810160528
+    # params is a list object containing the parsed URL parameters. Return TRUE if
+    # based on these parameters, it looks like auth codes are present that we can
+    # use to get an access token. If not, it means we need to go through the OAuth
+    # flow.
+    return(!is.null(params$code))
+}
+
+server <- function(input, output, session) {
+    output$redirect_js <- renderUI({
+        tags$head(tags$script(REDIRECT_STRAVA_AUTH))
+    })
     if (length(dbListTables(con)) == 0) {
         create_db(con)
     }
+    
+    # If we're coming back from an OAuth request, complete the auth process
+    params <- parseQueryString(isolate(session$clientData$url_search))
+    if (has_auth_code(params)) {
+        # Are we coming back from an OAuth request?
+        # Manually create a token, cache it
+        token <- oauth2.0_token(
+            app = STRAVA_APP,
+            endpoint = STRAVA_END,
+            credentials = oauth2.0_access_token(STRAVA_END, STRAVA_APP, params$code),
+            scope=STRAVA_SCOPE,
+        )
+        token$cache(OAUTH_CACHE)
+        
+        # Sync will look in cache and find token
+        sync(session)
+    }
+    
     n_activities <- tbl(con, "activities") |> count() |> pull()
-    if (n_activities == 0) {
+    if (n_activities == 0 && !has_auth_code(params)) {
         showModal(
             modalDialog(
                 title = "Initial setup",
@@ -332,14 +410,14 @@ function(input, output, session) {
     })
     
     observeEvent(input$refresh, {
-        if (sync()) {
+        if (sync(session)) {
             activities_synced(activities_synced() + 1)
         }
     })
     
     observeEvent(input$first_sync, {
         removeModal()
-        if (sync()) {
+        if (sync(session)) {
             activities_synced(activities_synced() + 1)
         }
     })
@@ -779,3 +857,4 @@ function(input, output, session) {
                          color="steelblue")
     })
 }
+
