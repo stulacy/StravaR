@@ -12,6 +12,8 @@ library(shiny)
 library(DT)
 library(zoo)
 library(leaflet)
+library(FITfileR)
+library(gpx)
 library(sf)
 library(plotly)
 library(httr)
@@ -19,14 +21,15 @@ source("utils.R")
 
 PORT <- 8100
 options(shiny.port=PORT)
+options(shiny.maxRequestSize=200*1024^2)
 APP_URL <- sprintf("http://localhost:%d/", PORT)
+DB_FN <- "data.db"
 
 STRAVA_APP <- oauth_app(appname = "FitViz", 
                         key = Sys.getenv("FITVIZ_CLIENTID"), 
                         redirect_uri = APP_URL,
                         secret = Sys.getenv("FITVIZ_SECRET"))  
 STRAVA_END <- oauth_endpoint(
-    #request = "https://www.strava.com/oauth/authorize?",
     authorize = "https://www.strava.com/oauth/authorize",
     access = "https://www.strava.com/oauth/token")
 STRAVA_SCOPE <- "activity:read_all"
@@ -35,7 +38,7 @@ REDIRECT_STRAVA_AUTH <- sprintf("Shiny.addCustomMessageHandler('redirect_strava'
                                 STRAVA_URL)
 OAUTH_CACHE <- ".httr-oauth"
 
-con <- dbConnect(SQLite(), "data/strava.db")
+con <- dbConnect(SQLite(), DB_FN)
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
 FORM_OFFSET <- 40
@@ -61,6 +64,123 @@ insert_or_update_default_activity <- function(value) {
     }
     res <- dbSendStatement(con, q, params=list(value))
     dbClearResult(res)
+}        
+
+        
+create_activities <- function(df) {
+    # Creates activity records in the DB
+    # 
+    # Args:
+    #  - df (data.table)
+    # 
+    # Returns:
+    #  None
+    
+    # Add any new activity types
+    act_types <- unique(df$activity_type)
+    curr_act_types <- tbl(con, "activity_types") |> pull(activity_type)
+    new_types <- setdiff(act_types, curr_act_types)
+    if (length(new_types) > 0) {
+        dbAppendTable(con, "activity_types", data.frame(activity_type=new_types))
+    }
+    
+    # Create activity record 
+    dbAppendTable(con, "activities", df)
+}
+
+upload_activities <- function(df) {
+    # Uploads new activities
+    # 
+    # Args:
+    #   - df (data.table): Columns:
+    #     - activity_id (PK)
+    #     - time (PK)
+    #     - heartrate
+    #     - lat
+    #     - lon
+ 
+    # Upload heart rate and location data
+    hr <- df[ !is.na(heartrate), .(activity_id, time, heartrate)]
+    location <- df[ !is.na(lat) & !is.na(lon), .(activity_id, time, lat, lon)]
+    dbAppendTable(con, "heartrate", hr)
+    dbAppendTable(con, "location", location)
+    
+    # Calculate fitness scores
+    if (nrow(hr) > 0) {
+        athlete <- tbl(con, "athlete") |> collect()
+        hrss <- hr[, .(hrss = calculate_hrss(heartrate,
+                                             time,
+                                             athlete$maxHR,
+                                             athlete$restHR,
+                                             athlete$thresholdHR,
+                                             )), 
+                         by=.(activity_id)]
+        dbAppendTable(con, "fitness", hrss)
+    }
+}
+
+handle_export_archive <- function(archive) {
+    # Extract archive to a temporary folder
+    temp_dir <- tempdir()
+    unzip(archive$datapath, exdir=temp_dir)
+    
+    # TODO add progress bars!
+    
+    # Add activities first!
+    all_activities <- fread(file.path(temp_dir, "activities.csv"))
+    all_activities <- all_activities[, .(activity_type=`Activity Type`, 
+                                         activity_id = `Activity ID`,
+                                         filename_id = gsub("\\..+", "", basename(Filename)), 
+                                         name = `Activity Name`,
+                                         start_time = lubridate::as_datetime(`Activity Date`, format="%b %d, %Y, %I:%M:%S %p"),
+                                         duration = `Elapsed Time`,
+                                         distance = `Distance`,
+                                         elevation = `Elevation Gain`)]
+    create_activities(all_activities |> select(-filename_id))
+        
+    # Read fit files
+    fit_files <- list.files(file.path(temp_dir, "activities"),
+                            pattern="*.fit.gz", full.names=TRUE)
+    for (fn in fit_files) {
+        # Unzip fit file and read into R
+        R.utils::gunzip(fn, overwrite=TRUE, remove=FALSE)
+        bn <- tools::file_path_sans_ext(fn)  
+        fit_raw <- readFitFile(bn)
+        df_raw <- rbindlist(records(fit_raw), fill=TRUE, use.names=TRUE)
+        
+        setnames(df_raw, 
+                 old=c("timestamp", "heart_rate", "position_lat", "position_long"),
+                 new=c("time", "heartrate", "lat", "lon"))
+        df_raw <- df_raw[, .(time, heartrate, lat, lon)]
+        
+        # Add activity_id
+        df_raw[, filename_id := gsub("\\..+", "", basename(bn))]
+        df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
+        
+        upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)])
+    }
+    
+    # Unzip GPX files - shouldn't ever have any but worth accounting for possibility
+    gpx_gz_files <- list.files(file.path(temp_dir, "activities"),
+                            pattern="*.gpx.gz", full.names=TRUE)
+    dummy <- lapply(gpx_gz_files, R.utils::gunzip, overwrite=TRUE, remove=FALSE)
+    
+    # convert GPX to CSV using gpsbabel
+    gpx_files <- list.files(file.path(temp_dir, "activities"),
+                            pattern="*.gpx", full.names=TRUE)
+    for (fn in gpx_files) {
+        # Unzip fit file and read into R
+        gpx_raw <- read_gpx(fn)
+        gpx_data <- rbindlist(gpx_raw$tracks)
+        gpx_data[, filename_id := gsub("\\..+", "", basename(fn))]
+        setnames(gpx_data, old=c('Time', 'Latitude', 'Longitude'), new=c('time', 'lat', 'lon'))
+        # load activity_id and set to first column
+        gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
+        gpx_data[, heartrate := NA]  # Need unused column for heartrate
+        setcolorder(gpx_data, c('activity_id', 'time', 'heartrate', 'lat', 'lon'))
+        
+        upload_activities(gpx_data[, .(activity_id, time, heartrate, lat, lon)])
+    }
 }
 
 insert_or_update_athlete <- function(settings) {
@@ -202,12 +322,16 @@ get_stream <- function(id, auth) {
     
     if ("heartrate" %in% names(res)) {
         dt[, heartrate := as.numeric(res$heartrate$data)]
+    } else {
+        dt[, heartrate := NA ]
     }
     if ("latlng" %in% names(res)) {
         dt[, latlng := res$latlng$data]
         dt[, c('lat', 'lon') := .(as.numeric(map(latlng, function(x) x[[1]])),
                                    as.numeric(map(latlng, function(x) x[[2]])))]
         dt[, latlng := NULL]
+    } else {
+        dt[, c('lat', 'lon') := NA ]
     }
     
     dt
@@ -255,6 +379,20 @@ auth_strava <- function(session) {
     }
 }
 
+showImportModal <- function(x) {
+    showModal(
+        modalDialog(
+            title = "Bulk import",
+            h4("Upload an archive containing a Strava export"),
+            easyClose = FALSE,
+            fade=FALSE,
+            footer=tagList(
+                fileInput("archive_upload", "Select file")
+            )
+        )
+    )
+}
+
 sync <- function(session) {
     has_updates <- TRUE
     # Create a Progress object
@@ -280,43 +418,26 @@ sync <- function(session) {
             has_updates <- FALSE
             return()  # Only returns from withProgress
         }
-        # TODO does this show, or does it quickly get overwritten by the continuing progress bar?
+        # Does this show, or does it quickly get overwritten by the continuing progress bar?
         showNotification(sprintf("Found %d activities to sync", nrow(new_activities)),
                          type="success", duration=3)
         
-        setProgress(value=.4, detail="Downloading heartrate and gps")
-        streams <- rbindlist(lapply(new_activities$activity_id, get_stream, auth_header), fill=TRUE)
-        # Add on starting time to go from relative to absolute
-        streams <- streams[new_activities, .(activity_id, heartrate, lat, lon, time=start_time + time_offset), on=.(activity_id)]
-        # Separate into heartrate and location
-        hr <- streams[ !is.na(heartrate), .(activity_id, time, heartrate)]
-        location <- streams[ !is.na(lat) & !is.na(lon), .(activity_id, time, lat, lon)]
+        #setProgress(value=.4, detail="Downloading heartrate and gps")
         
-        setProgress(value=.6, detail="Calculating fitness scores")
-        # Calculate fitness scores
-        athlete <- tbl(con, "athlete") |> collect()
-        hrss <- hr[, .(hrss = calculate_hrss(heartrate,
-                                             time,
-                                             athlete$maxHR,
-                                             athlete$restHR,
-                                             athlete$thresholdHR,
-                                             )), 
-                         by=.(activity_id)]
-        
-        # Update DB!
-        setProgress(value=.8, detail="Updating DB")
-        # Add any new activity types
-        act_types <- unique(new_activities$activity_type)
-        curr_act_types <- tbl(con, "activity_types") |> pull(activity_types)
-        new_types <- setdiff(act_types, curr_act_types)
-        if (length(new_types) > 0) {
-            dbAppendTable(con, "activity_types", data.frame(activity_type=new_types))
+        # Iterate over each activity, adding to DB in turn
+        num_added <- 0
+        for (i in seq(1:nrow(new_activities))) {
+            stream <- get_stream(new_activities$activity_id[i], auth_header)
+            # TODO error checking here, i.e. only upload anything to do with activity if have both
+            # datasets
+            stream <- stream[new_activities[i, ],
+                             .(activity_id, heartrate, lat, lon, time=start_time + time_offset),
+                             on=.(activity_id)]
+            create_activities(new_activities[i, ])
+            upload_activities(stream)
+            num_added <- num_added + 1
         }
-        dbAppendTable(con, "activities", new_activities)
-        dbAppendTable(con, "heartrate", hr)
-        dbAppendTable(con, "location", location)
-        dbAppendTable(con, "fitness", hrss)
-        showNotification(sprintf("Synced %d activities!", nrow(new_activities)),
+        showNotification(sprintf("Synced %d activities!", num_added),
                          type="message", duration=3)
     })
     has_updates
@@ -422,6 +543,19 @@ server <- function(input, output, session) {
         }
     })
     
+    observeEvent(input$import, {
+        removeModal()
+        showImportModal()
+    })
+    
+    
+    observeEvent(input$archive_upload, {
+        handle_export_archive(input$archive_upload)
+        activities_synced(activities_synced() + 1)
+        removeModal()
+    })
+    
+    
     observeEvent(input$insert_settings, {
         default_activity(input$update_default_activity)
         insert_or_update_default_activity(input$update_default_activity)
@@ -448,6 +582,7 @@ server <- function(input, output, session) {
                 easyClose = FALSE,
                 fade=FALSE,
                 footer=tagList(
+                    actionButton("import", "Bulk import Strava export"),
                     actionButton("first_sync", "Sync data")
                 )
             )
