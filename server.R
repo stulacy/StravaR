@@ -120,67 +120,149 @@ upload_activities <- function(df) {
 }
 
 handle_export_archive <- function(archive) {
-    # Extract archive to a temporary folder
-    temp_dir <- tempdir()
-    unzip(archive$datapath, exdir=temp_dir)
     
-    # TODO add progress bars!
-    
-    # Add activities first!
-    all_activities <- fread(file.path(temp_dir, "activities.csv"))
-    all_activities <- all_activities[, .(activity_type=`Activity Type`, 
-                                         activity_id = `Activity ID`,
-                                         filename_id = gsub("\\..+", "", basename(Filename)), 
-                                         name = `Activity Name`,
-                                         start_time = lubridate::as_datetime(`Activity Date`, format="%b %d, %Y, %I:%M:%S %p"),
-                                         duration = `Elapsed Time`,
-                                         distance = `Distance`,
-                                         elevation = `Elevation Gain`)]
-    create_activities(all_activities |> select(-filename_id))
+    withProgress(
+        message="Reading export file",
+        detail="Extract raw activity files",
+        value=0.0, {
+            
+        # Extract archive to a temporary folder
+        temp_dir <- tempdir()
+        unzip(archive$datapath, exdir=temp_dir)
         
-    # Read fit files
-    fit_files <- list.files(file.path(temp_dir, "activities"),
-                            pattern="*.fit.gz", full.names=TRUE)
-    for (fn in fit_files) {
-        # Unzip fit file and read into R
-        R.utils::gunzip(fn, overwrite=TRUE, remove=FALSE)
-        bn <- tools::file_path_sans_ext(fn)  
-        fit_raw <- readFitFile(bn)
-        df_raw <- rbindlist(records(fit_raw), fill=TRUE, use.names=TRUE)
+        setProgress(
+            value=0.1,
+            message="Reading main list of activities...",
+        )
+            
+        # Add activities first!
+        all_activities <- fread(file.path(temp_dir, "activities.csv"))
+        all_activities <- all_activities[, .(activity_type=`Activity Type`, 
+                                             activity_id = `Activity ID`,
+                                             filename_id = gsub("\\..+", "", basename(Filename)), 
+                                             name = `Activity Name`,
+                                             start_time = lubridate::as_datetime(`Activity Date`, format="%b %d, %Y, %I:%M:%S %p"),
+                                             duration = `Elapsed Time`,
+                                             distance = `Distance`,
+                                             elevation = `Elevation Gain`)]
+        setProgress(
+            value=0.2,
+            message=sprintf("Found %d activities!", nrow(all_activities)),
+            detail="Adding to database"
+        )
+        create_activities(all_activities |> select(-filename_id))
         
-        setnames(df_raw, 
-                 old=c("timestamp", "heart_rate", "position_lat", "position_long"),
-                 new=c("time", "heartrate", "lat", "lon"))
-        df_raw <- df_raw[, .(time, heartrate, lat, lon)]
+        # TODO ideally would also upload activities that don't exist in the same way as sync,
+        # so in case this bulk export dies can resume later
+            
+        # Read fit files
+        fit_files <- list.files(file.path(temp_dir, "activities"),
+                                pattern="*.fit.gz$", full.names=TRUE)
         
-        # Add activity_id
-        df_raw[, filename_id := gsub("\\..+", "", basename(bn))]
-        df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
+        # Setup values for progress bar updates
+        n_fit_files <- length(fit_files)
+        fit_files_indices <- 1:n_fit_files
+        if (n_fit_files < 20) {
+            progress_update_indices <- fit_files_indices
+        } else {
+            increment <- floor(0.05 * n_fit_files)
+            progress_update_indices <- seq(1, n_fit_files, by=increment)
+        }
         
-        upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)])
-    }
-    
-    # Unzip GPX files - shouldn't ever have any but worth accounting for possibility
-    gpx_gz_files <- list.files(file.path(temp_dir, "activities"),
-                            pattern="*.gpx.gz", full.names=TRUE)
-    dummy <- lapply(gpx_gz_files, R.utils::gunzip, overwrite=TRUE, remove=FALSE)
-    
-    # convert GPX to CSV using gpsbabel
-    gpx_files <- list.files(file.path(temp_dir, "activities"),
-                            pattern="*.gpx", full.names=TRUE)
-    for (fn in gpx_files) {
-        # Unzip fit file and read into R
-        gpx_raw <- read_gpx(fn)
-        gpx_data <- rbindlist(gpx_raw$tracks)
-        gpx_data[, filename_id := gsub("\\..+", "", basename(fn))]
-        setnames(gpx_data, old=c('Time', 'Latitude', 'Longitude'), new=c('time', 'lat', 'lon'))
-        # load activity_id and set to first column
-        gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
-        gpx_data[, heartrate := NA]  # Need unused column for heartrate
-        setcolorder(gpx_data, c('activity_id', 'time', 'heartrate', 'lat', 'lon'))
+        # Read each file
+        for (i in fit_files_indices) {
+            fn <- fit_files[i]
+            if (i %in% progress_update_indices) {
+                curr_pct <- i / n_fit_files
+                overall_pct = 0.2 + (curr_pct * 0.4)
+                setProgress(
+                    value=overall_pct,
+                    message="Adding FIT activities to database",
+                    detail=sprintf("File %d/%d (%.2f%%)", i, n_fit_files, curr_pct*100)
+                )
+            }
+            # Unzip fit file and read into R
+            R.utils::gunzip(fn, overwrite=TRUE, remove=FALSE)
+            bn <- tools::file_path_sans_ext(fn)  
+            
+            tryCatch({
+                fit_raw <- readFitFile(bn)
+                fit_raw <- records(fit_raw)
+                
+                if ('list' %in% class(fit_raw)) {
+                    df_raw <- rbindlist(fit_raw, fill=TRUE, use.names=TRUE)
+                } else {
+                    df_raw <- as.data.table(fit_raw)
+                }
+                
+                setnames(df_raw, 
+                         old=c("timestamp", "heart_rate", "position_lat", "position_long"),
+                         new=c("time", "heartrate", "lat", "lon"),
+                         skip_absent = TRUE)
+                df_raw <- df_raw[, .(time, 
+                                     heartrate=ifelse("heartrate"%in%names(df_raw), heartrate, NA),
+                                     lat=ifelse("lat"%in%names(df_raw), lat, NA),
+                                     lon=ifelse("lon"%in%names(df_raw), lon, NA)
+                                     )]
+                
+                # Add activity_id
+                df_raw[, filename_id := gsub("\\..+", "", basename(bn))]
+                df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
+                
+                upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)])
+            }, 
+            error=function(e) {} 
+            )
+        }
         
-        upload_activities(gpx_data[, .(activity_id, time, heartrate, lat, lon)])
-    }
+        # Unzip GPX files - shouldn't ever have any but worth accounting for possibility
+        gpx_gz_files <- list.files(file.path(temp_dir, "activities"),
+                                pattern="*.gpx.gz$", full.names=TRUE)
+        dummy <- lapply(gpx_gz_files, R.utils::gunzip, overwrite=TRUE, remove=FALSE)
+        
+        # convert GPX to CSV using gpsbabel
+        gpx_files <- list.files(file.path(temp_dir, "activities"),
+                                pattern="*.gpx$", full.names=TRUE)
+        
+        # Setup values for progress bar updates
+        n_gpx_files <- length(gpx_files)
+        gpx_files_indices <- 1:n_gpx_files
+        if (n_gpx_files < 20) {
+            progress_update_indices <- gpx_files_indices
+        } else {
+            increment <- floor(0.05 * n_gpx_files)
+            progress_update_indices <- seq(1, n_gpx_files, by=increment)
+        }
+        
+        for (i in gpx_files_indices) {
+            fn <- gpx_files[i]
+            
+            if (i %in% progress_update_indices) {
+                curr_pct <- i / n_gpx_files
+                overall_pct = 0.2 + (curr_pct * 0.4)
+                setProgress(
+                    value=overall_pct,
+                    message="Adding GPX activities to database",
+                    detail=sprintf("File %d/%d (%.2f%%)", i, n_gpx_files, curr_pct*100)
+                )
+            }
+            
+            # Read gpx file into R
+            tryCatch({
+                gpx_raw <- read_gpx(fn)
+                gpx_data <- rbindlist(gpx_raw$tracks)
+                gpx_data[, filename_id := gsub("\\..+", "", basename(fn))]
+                setnames(gpx_data, old=c('Time', 'Latitude', 'Longitude'), new=c('time', 'lat', 'lon'), skip_absent = TRUE)
+                # load activity_id and set to first column
+                gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
+                gpx_data[, heartrate := NA]  # Need unused column for heartrate
+                setcolorder(gpx_data, c('activity_id', 'time', 'heartrate', 'lat', 'lon'))
+                upload_activities(gpx_data[, .(activity_id, time, heartrate, lat, lon)])
+            },
+              error=function(e) {}
+            )
+        }
+    })
 }
 
 insert_or_update_athlete <- function(settings) {
@@ -401,8 +483,6 @@ sync <- function(session) {
                  value=0, {
         
         auth_header <- auth_strava(session)
-        # TODO Update progress bar more often when actually downloading
-        # I.e. update for each/every 5% streams
         if (is.null(auth_header)) {
             showNotification("Error authenticating. Try deleting .httr-oauth and trying again.",
                              type="error", duration=3)
@@ -422,10 +502,10 @@ sync <- function(session) {
         showNotification(sprintf("Found %d activities to sync", nrow(new_activities)),
                          type="success", duration=3)
         
-        #setProgress(value=.4, detail="Downloading heartrate and gps")
-        
         # Iterate over each activity, adding to DB in turn
         num_added <- 0
+        # TODO Update progress bar more often when actually downloading
+        # I.e. update for each/every 5% streams
         for (i in seq(1:nrow(new_activities))) {
             stream <- get_stream(new_activities$activity_id[i], auth_header)
             # TODO error checking here, i.e. only upload anything to do with activity if have both
