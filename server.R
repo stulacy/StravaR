@@ -504,12 +504,25 @@ sync <- function(session) {
         
         # Iterate over each activity, adding to DB in turn
         num_added <- 0
-        # TODO Update progress bar more often when actually downloading
-        # I.e. update for each/every 5% streams
-        for (i in seq(1:nrow(new_activities))) {
+        n_activities <- nrow(new_activities)
+        activity_indices <- 1:n_activities
+        if (n_activities < 20) {
+            progress_update_indices <- activity_indices
+        } else {
+            increment <- floor(0.05 * n_activities)
+            progress_update_indices <- seq(1, n_activities, by=increment)
+        }
+        
+        for (i in 1:n_activities) {
+            if (i %in% progress_update_indices) {
+                curr_pct <- i / n_activities
+                overall_pct = 0.1 + (curr_pct * 0.9)
+                setProgress(
+                    value=overall_pct,
+                    detail=sprintf("File %d/%d (%.2f%%)", i, n_activities, curr_pct*100)
+                )
+            }
             stream <- get_stream(new_activities$activity_id[i], auth_header)
-            # TODO error checking here, i.e. only upload anything to do with activity if have both
-            # datasets
             stream <- stream[new_activities[i, ],
                              .(activity_id, heartrate, lat, lon, time=start_time + time_offset),
                              on=.(activity_id)]
