@@ -150,11 +150,6 @@ handle_export_archive <- function(archive) {
             message=sprintf("Found %d activities!", nrow(all_activities)),
             detail="Adding to database"
         )
-        create_activities(all_activities |> select(-filename_id))
-        
-        # TODO ideally would also upload activities that don't exist in the same way as sync,
-        # so in case this bulk export dies can resume later
-            
         # Read fit files
         fit_files <- list.files(file.path(temp_dir, "activities"),
                                 pattern="*.fit.gz$", full.names=TRUE)
@@ -181,7 +176,13 @@ handle_export_archive <- function(archive) {
                     detail=sprintf("File %d/%d (%.2f%%)", i, n_fit_files, curr_pct*100)
                 )
             }
-            # Unzip fit file and read into R
+            
+            # Unzip fit file and read into R if doesn't exist in DB
+            this_filename_id <- basename(tools::file_path_sans_ext(tools::file_path_sans_ext(fn)))
+            this_activity_id <- all_activities |> 
+                                    filter(filename_id == this_filename_id) |>
+                                    pull(activity_id)
+            if (tbl(con, "activities") |> filter(activity_id == this_activity_id) |> count() |> pull(n) > 0) next
             R.utils::gunzip(fn, overwrite=TRUE, remove=FALSE)
             bn <- tools::file_path_sans_ext(fn)  
             
@@ -206,9 +207,11 @@ handle_export_archive <- function(archive) {
                                      )]
                 
                 # Add activity_id
-                df_raw[, filename_id := gsub("\\..+", "", basename(bn))]
+                df_raw[, filename_id := this_filename_id ]
                 df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
                 
+                # Create activity entry and upload the time-series data if doesn't exist
+                create_activities(all_activities |> filter(activity_id == this_activity_id) |> select(-filename_id))
                 upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)])
             }, 
             error=function(e) {} 
@@ -247,6 +250,13 @@ handle_export_archive <- function(archive) {
                 )
             }
             
+            # Only read file if doesn't exist in DB
+            this_filename_id <- basename(tools::file_path_sans_ext(fn))
+            this_activity_id <- all_activities |> 
+                                    filter(filename_id == this_filename_id) |>
+                                    pull(activity_id)
+            if (tbl(con, "activities") |> filter(activity_id == this_activity_id) |> count() |> pull(n) > 0) next
+            
             # Read gpx file into R
             tryCatch({
                 gpx_raw <- read_gpx(fn)
@@ -257,6 +267,8 @@ handle_export_archive <- function(archive) {
                 gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
                 gpx_data[, heartrate := NA]  # Need unused column for heartrate
                 setcolorder(gpx_data, c('activity_id', 'time', 'heartrate', 'lat', 'lon'))
+                
+                create_activities(all_activities |> filter(activity_id == this_activity_id) |> select(-filename_id))
                 upload_activities(gpx_data[, .(activity_id, time, heartrate, lat, lon)])
             },
               error=function(e) {}
