@@ -6,13 +6,13 @@ library(lubridate)
 library(tidyverse)
 library(hms)
 library(DBI)
-library(RSQLite)
 library(shinyjs)
 library(shiny)
 library(DT)
 library(zoo)
 library(leaflet)
 library(FITfileR)
+library(duckdb)
 library(gpx)
 library(sf)
 library(plotly)
@@ -25,7 +25,8 @@ options(shiny.maxRequestSize=200*1024^2)
 APP_URL <- sprintf("http://localhost:%d/", PORT)
 DB_FN <- "data.db"
 
-STRAVA_APP <- oauth_app(appname = "FitViz", 
+STRAVA_APP_NAME <- 'FitViz'
+STRAVA_APP <- oauth_app(appname = STRAVA_APP_NAME,
                         key = Sys.getenv("FITVIZ_CLIENTID"), 
                         redirect_uri = APP_URL,
                         secret = Sys.getenv("FITVIZ_SECRET"))  
@@ -38,7 +39,7 @@ REDIRECT_STRAVA_AUTH <- sprintf("Shiny.addCustomMessageHandler('redirect_strava'
                                 STRAVA_URL)
 OAUTH_CACHE <- ".httr-oauth"
 
-con <- dbConnect(SQLite(), DB_FN)
+con <- dbConnect(duckdb(), DB_FN)
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
 FORM_OFFSET <- 40
@@ -85,6 +86,9 @@ create_activities <- function(df) {
     }
     
     # Create activity record 
+    # Duckdb can't convert from integer64 (bit64 R library) into its own long type
+    # so cast as float
+    df[, activity_id := as.numeric(activity_id) ]
     dbAppendTable(con, "activities", df)
 }
 
@@ -102,6 +106,15 @@ upload_activities <- function(df) {
     # Upload heart rate and location data
     hr <- df[ !is.na(heartrate), .(activity_id, time, heartrate)]
     location <- df[ !is.na(lat) & !is.na(lon), .(activity_id, time, lat, lon)]
+    
+    # Same issue about duckdb not correctly parsing integer64 so convert to float
+    hr[, activity_id := as.numeric(activity_id)]
+    location[, activity_id := as.numeric(activity_id)]
+    
+    # FITFileR returns 255 for heartrate if missing, given that no one should have this as an actual
+    # measurement it seems reasonable to remove these rows
+    hr <- hr[ heartrate < 255 ]
+    
     dbAppendTable(con, "heartrate", hr)
     dbAppendTable(con, "location", location)
     
@@ -130,11 +143,6 @@ handle_export_archive <- function(archive) {
         temp_dir <- tempdir()
         unzip(archive$datapath, exdir=temp_dir)
         
-        setProgress(
-            value=0.1,
-            message="Reading main list of activities...",
-        )
-            
         # Add activities first!
         all_activities <- fread(file.path(temp_dir, "activities.csv"))
         all_activities <- all_activities[, .(activity_type=`Activity Type`, 
@@ -145,35 +153,53 @@ handle_export_archive <- function(archive) {
                                              duration = `Elapsed Time`,
                                              distance = `Distance`,
                                              elevation = `Elevation Gain`)]
-        setProgress(
-            value=0.2,
-            message=sprintf("Found %d activities!", nrow(all_activities)),
-            detail="Adding to database"
-        )
-        # Read fit files
+        
+        # Unzip GPX files - shouldn't ever have any but worth accounting for possibility
+        gpx_gz_files <- list.files(file.path(temp_dir, "activities"),
+                                pattern="*.gpx.gz$", full.names=TRUE)
+        dummy <- lapply(gpx_gz_files, R.utils::gunzip, overwrite=TRUE, remove=FALSE)
+        
+        # Count the number of GPX and FIT files
         fit_files <- list.files(file.path(temp_dir, "activities"),
                                 pattern="*.fit.gz$", full.names=TRUE)
         
         # Setup values for progress bar updates
         n_fit_files <- length(fit_files)
+        
         fit_files_indices <- 1:n_fit_files
         if (n_fit_files < 20) {
-            progress_update_indices <- fit_files_indices
+            progress_update_indices_fit <- fit_files_indices
         } else {
-            increment <- floor(0.05 * n_fit_files)
-            progress_update_indices <- seq(1, n_fit_files, by=increment)
+            increment <- floor(0.01 * n_fit_files)
+            progress_update_indices_fit <- seq(1, n_fit_files, by=increment)
         }
+        
+        # convert GPX to CSV using gpsbabel
+        gpx_files <- list.files(file.path(temp_dir, "activities"),
+                                pattern="*.gpx$", full.names=TRUE)
+        
+        # Setup values for progress bar updates
+        n_gpx_files <- length(gpx_files)
+        gpx_files_indices <- 1:n_gpx_files
+        if (n_gpx_files < 20) {
+            progress_update_indices_gpx <- gpx_files_indices
+        } else {
+            increment <- floor(0.01 * n_gpx_files)
+            progress_update_indices_gpx <- seq(1, n_gpx_files, by=increment)
+        }
+        
+        n_total_files <- n_fit_files + n_gpx_files
         
         # Read each file
         for (i in fit_files_indices) {
             fn <- fit_files[i]
-            if (i %in% progress_update_indices) {
-                curr_pct <- i / n_fit_files
-                overall_pct = 0.2 + (curr_pct * 0.4)
+            if (i %in% progress_update_indices_fit) {
+                fit_pct <- i / n_fit_files
+                overall_pct <- i / n_total_files
                 setProgress(
                     value=overall_pct,
                     message="Adding FIT activities to database",
-                    detail=sprintf("File %d/%d (%.2f%%)", i, n_fit_files, curr_pct*100)
+                    detail=sprintf("File %d/%d (%.2f%%)", i, n_fit_files, fit_pct*100)
                 )
             }
             
@@ -211,42 +237,26 @@ handle_export_archive <- function(archive) {
                 df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
                 
                 # Create activity entry and upload the time-series data if doesn't exist
-                create_activities(all_activities |> filter(activity_id == this_activity_id) |> select(-filename_id))
+                create_activities(
+                    all_activities[activity_id == this_activity_id, .(activity_type, activity_id, name, start_time, duration, distance, elevation) ]
+                )
                 upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)])
             }, 
             error=function(e) {} 
             )
         }
         
-        # Unzip GPX files - shouldn't ever have any but worth accounting for possibility
-        gpx_gz_files <- list.files(file.path(temp_dir, "activities"),
-                                pattern="*.gpx.gz$", full.names=TRUE)
-        dummy <- lapply(gpx_gz_files, R.utils::gunzip, overwrite=TRUE, remove=FALSE)
-        
-        # convert GPX to CSV using gpsbabel
-        gpx_files <- list.files(file.path(temp_dir, "activities"),
-                                pattern="*.gpx$", full.names=TRUE)
-        
-        # Setup values for progress bar updates
-        n_gpx_files <- length(gpx_files)
-        gpx_files_indices <- 1:n_gpx_files
-        if (n_gpx_files < 20) {
-            progress_update_indices <- gpx_files_indices
-        } else {
-            increment <- floor(0.05 * n_gpx_files)
-            progress_update_indices <- seq(1, n_gpx_files, by=increment)
-        }
         
         for (i in gpx_files_indices) {
             fn <- gpx_files[i]
             
-            if (i %in% progress_update_indices) {
-                curr_pct <- i / n_gpx_files
-                overall_pct = 0.2 + (curr_pct * 0.4)
+            if (i %in% progress_update_indices_gpx) {
+                gpx_pct <- i / n_gpx_files
+                overall_pct <- (i + n_fit_files) / n_total_files
                 setProgress(
                     value=overall_pct,
                     message="Adding GPX activities to database",
-                    detail=sprintf("File %d/%d (%.2f%%)", i, n_gpx_files, curr_pct*100)
+                    detail=sprintf("File %d/%d (%.2f%%)", i, n_gpx_files, gpx_pct*100)
                 )
             }
             
@@ -294,8 +304,8 @@ insert_or_update_athlete <- function(settings) {
                   thresholdHR = ?
               WHERE athlete_id = 1;"
     } else {
-        q <- "INSERT INTO athlete (height, weight, maxHR, restHR, thresholdHR)
-              VALUES (?, ?, ?, ?, ?)"
+        q <- "INSERT INTO athlete (athlete_id, height, weight, maxHR, restHR, thresholdHR)
+              VALUES (1, ?, ?, ?, ?, ?)"
     }
     res <- dbSendStatement(con, q, params=as.list(unname(settings)))
     dbClearResult(res)
@@ -323,6 +333,7 @@ update_athlete_modal <- function(default_activity, failed=FALSE, first_time=FALS
         title <- "Configure app"
         easy_close <- FALSE
         footer <- tagList(
+            modalButton("Cancel"),
             actionButton("insert_settings", "Continue")
         )
     } else {
@@ -360,13 +371,21 @@ update_athlete_modal <- function(default_activity, failed=FALSE, first_time=FALS
     )
 }
 
+get_logged_in_user <- function(auth) {
+    # TODO handle non 200
+    user <- GET("https://www.strava.com/api/v3/athlete", auth)
+    raw <- content(user)
+    raw[c('username', 'profile_medium')]
+}
+
 get_recent_activities_meta <- function(auth) {
     # most recent activity
     most_recent_activity <- tbl(con, "activities") |>
                                 slice_max(start_time, n=1) |>
-                                pull(start_time)
+                                pull(start_time) |>
+                                as.integer()
     if (length(most_recent_activity) == 0) {
-        most_recent_activity <- as.numeric(as_datetime("1900-01-01"))
+        most_recent_activity <- as.integer(as_datetime("1900-01-01"))
     }
     # Get list of all activities
     page_size <- 30
@@ -442,35 +461,34 @@ create_db <- function(con) {
     map(queries, run_query)
 }
 
-auth_strava <- function(session) {
+load_strava_auth_from_cache <- function() {
     # Check for cached token
-    cache <- if (file.exists(OAUTH_CACHE)) {
-        readRDS(OAUTH_CACHE)
-    } else {
-        list()
-    }
-    cached_creds <- cache[vapply(cache, function(x) x[['app']][['appname']] == 'FitViz', logical(1))]
-    # Shouldn't have multiple credentials for the same app but just in case
-    if (length(cached_creds) > 1) {
+    if (!file.exists(OAUTH_CACHE)) {
         return(NULL)
     }
     
-    if (length(cached_creds) == 1) {
-        creds <- cached_creds[[1]]
-        # Refresh if expired if possible
-        if (creds$credentials$expires_at < now("UTC")) {
-            if (creds$can_refresh()) {
-                creds$refresh()
-            } else {
-                # Redirect user to authorise app at Strava's end
-                session$sendCustomMessage("redirect_strava", "redirect_strava")
-            }
-        }
-        return(add_headers(Authorization=sprintf("Bearer %s", creds$credentials$access_token)))
-    } else {
-        # Redirect user to authorise app at Strava's end
-        session$sendCustomMessage("redirect_strava", "redirect_strava")
+    cache <- readRDS(OAUTH_CACHE)
+    cached_creds <- cache[vapply(cache, function(x) x[['app']][['appname']] == STRAVA_APP_NAME, logical(1))]
+    # Check have one (and only one!) matching app
+    if (length(cached_creds) != 1) {
+        return(NULL)
     }
+    
+    creds <- cached_creds[[1]]
+    # Refresh if expired if possible
+    if (creds$credentials$expires_at < now("UTC")) {
+        if (creds$can_refresh()) {
+            creds$refresh()
+        } else {
+            return(NULL)
+        }
+    }
+    add_headers(Authorization=sprintf("Bearer %s", creds$credentials$access_token))
+}
+
+authenticate_strava <- function(session) {
+    # Redirect user to authorise app at Strava's end
+    session$sendCustomMessage("redirect_strava", "redirect_strava")
 }
 
 showImportModal <- function(x) {
@@ -481,11 +499,14 @@ showImportModal <- function(x) {
             easyClose = FALSE,
             fade=FALSE,
             footer=tagList(
+                modalButton("Cancel"),
                 fileInput("archive_upload", "Select file")
             )
         )
     )
 }
+
+AUTH_HEADER <- NULL
 
 sync <- function(session) {
     has_updates <- TRUE
@@ -494,16 +515,15 @@ sync <- function(session) {
                  detail="Authenticating...",
                  value=0, {
         
-        auth_header <- auth_strava(session)
-        if (is.null(auth_header)) {
-            showNotification("Error authenticating. Try deleting .httr-oauth and trying again.",
+        if (is.null(AUTH_HEADER)) {
+            showNotification(sprintf("Please reconnect to Strava, try deleting %s and trying again.", OAUTH_CACHE),
                              type="error", duration=3)
             has_updates <- FALSE
             return()  # Only returns from withProgress
         }
         
         setProgress(value=.1, detail="Finding new activities")
-        new_activities <- get_recent_activities_meta(auth_header)
+        new_activities <- get_recent_activities_meta(AUTH_HEADER)
         if (nrow(new_activities) == 0) {
             showNotification("No recent activities found!",
                              type="error", duration=3)
@@ -512,7 +532,7 @@ sync <- function(session) {
         }
         # Does this show, or does it quickly get overwritten by the continuing progress bar?
         showNotification(sprintf("Found %d activities to sync", nrow(new_activities)),
-                         type="success", duration=3)
+                         type="message", duration=3)
         
         # Iterate over each activity, adding to DB in turn
         num_added <- 0
@@ -521,7 +541,7 @@ sync <- function(session) {
         if (n_activities < 20) {
             progress_update_indices <- activity_indices
         } else {
-            increment <- floor(0.05 * n_activities)
+            increment <- floor(0.01 * n_activities)
             progress_update_indices <- seq(1, n_activities, by=increment)
         }
         
@@ -531,10 +551,10 @@ sync <- function(session) {
                 overall_pct = 0.1 + (curr_pct * 0.9)
                 setProgress(
                     value=overall_pct,
-                    detail=sprintf("File %d/%d (%.2f%%)", i, n_activities, curr_pct*100)
+                    detail=sprintf("Activity %d/%d (%.2f%%)", i, n_activities, curr_pct*100)
                 )
             }
-            stream <- get_stream(new_activities$activity_id[i], auth_header)
+            stream <- get_stream(new_activities$activity_id[i], AUTH_HEADER)
             stream <- stream[new_activities[i, ],
                              .(activity_id, heartrate, lat, lon, time=start_time + time_offset),
                              on=.(activity_id)]
@@ -558,6 +578,10 @@ has_auth_code <- function(params) {
     return(!is.null(params$code))
 }
 
+onStop(function() {
+    dbDisconnect(con, shutdown=TRUE)
+})
+
 server <- function(input, output, session) {
     output$redirect_js <- renderUI({
         tags$head(tags$script(REDIRECT_STRAVA_AUTH))
@@ -570,7 +594,7 @@ server <- function(input, output, session) {
     params <- parseQueryString(isolate(session$clientData$url_search))
     if (has_auth_code(params)) {
         # Are we coming back from an OAuth request?
-        # Manually create a token, cache it
+        # Manually create a token, cache it, about to load it next
         token <- oauth2.0_token(
             app = STRAVA_APP,
             endpoint = STRAVA_END,
@@ -578,10 +602,10 @@ server <- function(input, output, session) {
             scope=STRAVA_SCOPE,
         )
         token$cache(OAUTH_CACHE)
-        
-        # Sync will look in cache and find token
-        sync(session)
     }
+    
+    AUTH_HEADER <<- load_strava_auth_from_cache()
+    
     
     n_activities <- tbl(con, "activities") |> count() |> pull()
     if (n_activities == 0 && !has_auth_code(params)) {
@@ -592,6 +616,7 @@ server <- function(input, output, session) {
                 easyClose = FALSE,
                 fade=FALSE,
                 footer=tagList(
+                    modalButton("Some other time"),
                     actionButton("show_setup_athlete", "Continue")
                 )
             )
@@ -636,12 +661,34 @@ server <- function(input, output, session) {
     })
     
     observeEvent(input$refresh, {
-        if (sync(session)) {
-            activities_synced(activities_synced() + 1)
+        has_data <- tbl(con, "activities") |> count() |> pull(n) > 0
+        tags <- list(
+            modalButton("Cancel"),
+            actionButton("import", "Bulk import Strava export")
+        )
+        if (has_data) {
+            text <- "New activities can either be downloaded directly from the Strava API or through an exported Strava archive."
+            tags[[3]] <- actionButton("sync", "Sync data")
+        } else {
+            text <- "The first data upload must be from a Strava export, subsequent ones can 1-click sync directly with Strava."
         }
+        showModal(
+            modalDialog(
+                title = "Download recent activities",
+                p(text),
+                easyClose = TRUE,
+                fade=FALSE,
+                footer=do.call(tagList, tags)
+            )
+        )
     })
     
-    observeEvent(input$first_sync, {
+    observeEvent(input$connectStrava, {
+        authenticate_strava(session)
+    })
+    
+    
+    observeEvent(input$sync, {
         removeModal()
         if (sync(session)) {
             activities_synced(activities_synced() + 1)
@@ -682,13 +729,13 @@ server <- function(input, output, session) {
         # Now prompt to sync data
         showModal(
             modalDialog(
-                title = "Sync with Strava",
-                p("Great, now let's get some data! Press the button below and follow the prompts to authorise FitViz to access your Strava data."),
+                title = "Add activities",
+                p("Great, now let's get some data! Your first upload must be from a Strava export, afterwards you can 1-click sync."),
                 easyClose = FALSE,
                 fade=FALSE,
                 footer=tagList(
-                    actionButton("import", "Bulk import Strava export"),
-                    actionButton("first_sync", "Sync data")
+                    modalButton("Cancel"),
+                    actionButton("import", "Bulk import Strava export")
                 )
             )
         )
@@ -732,7 +779,7 @@ server <- function(input, output, session) {
         df <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             collect() |>
-            mutate(start_time = as_datetime(start_time),
+            mutate(start_time = start_time,
                    name = sprintf("<a href='https://strava.com/activities/%s'>%s</a>", 
                                   activity_id, 
                                   name),
@@ -838,7 +885,7 @@ server <- function(input, output, session) {
             select(start_time, distance) |>
             collect() |>
             setDT()
-        dt[, date := as_date(as_datetime(start_time))]
+        dt[, date := as_date(start_time)]
         dt[, .(distance = sum(distance)), by=date]
         validate(need(nrow(dt) > 0, "No activities found"))
         dt
@@ -855,7 +902,7 @@ server <- function(input, output, session) {
                         inner_join(tbl(con, "activities"), by="activity_id") |>
                         filter(activity_type %in% types) |>
                         collect() |>
-                        mutate(date = as_date(as_datetime(start_time))) |>
+                        mutate(date = as_date(start_time)) |>
                         setDT()
         validate(need(nrow(hrss) > 0, "No activities found"))
         # Summarise per date
@@ -884,6 +931,7 @@ server <- function(input, output, session) {
             hrss$Form[i] <- prev_fitness - prev_fatigue
         }
         fitness_updated(FALSE)
+        hrss
     })
     
     routes_df <- eventReactive(c(input$activity_type_select, activities_synced()), {
@@ -895,7 +943,6 @@ server <- function(input, output, session) {
             collect() |>
             setDT()
         
-        dt[, time := as_datetime(time)]
         dt[, date := as_date(time)]
         setorder(dt, time)
         validate(need(nrow(dt) > 0, "No activities found"))
@@ -904,6 +951,7 @@ server <- function(input, output, session) {
     
     output$mileage_cumulative <- renderPlotly({
         df2 <- mileage_df()
+        # TODO should this create a copy instead?
         df2[, c('Year', 'Date') := .(as.factor(year(date)), 
                                      as_datetime(sprintf("2000-%d-%d", 
                                                          month(date),
@@ -958,6 +1006,8 @@ server <- function(input, output, session) {
         all_dates <- data.table(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
         df <- merge(df, all_dates, on='date', all.y=TRUE)
         df[, distance := ifelse(is.na(df$distance), 0, df$distance)]
+        df <- df[, .(distance = sum(distance, na.rm=T)), by=.(date)]
+        # Have date, start_time, distance, Year, Date, Distance, label
         df[, weeklyrate := rollsum(zoo(distance, date), 7, fill=NA)]
         df[, mileage := rollmean(zoo(weeklyrate, date), 7, fill=NA)]
         
@@ -1075,7 +1125,29 @@ server <- function(input, output, session) {
          subplot(p1, p2, p3, shareX = TRUE, nrows=3,
                       titleY=TRUE) |>
             layout(hovermode="x unified",
-                   xaxis=list(title=""))
+                   xaxis=list(title="", 
+                              range=c(today() - months(1), today())))
+    })
+    
+    output$stravaConnectPlaceholder <- renderUI({
+        if (is.null(AUTH_HEADER)) {
+        tags$li(
+            actionLink(
+                "connectStrava",
+                label=img(src="resources/btn_strava_connectwith_orange.png"),
+            ),
+            class = "dropdown")
+        } else {
+            user <- get_logged_in_user(AUTH_HEADER)
+            tags$li(
+                div(
+                    a(href="https://strava.com",
+                      span(user$username, class="strava-profile-text")),
+                    img(src=user$profile_medium, class="strava-profile-image"),
+                    class="strava-profile-container"
+                )
+            )
+        }
     })
     
     output$routes <- renderLeaflet({
@@ -1096,5 +1168,5 @@ server <- function(input, output, session) {
             addPolylines(label=df_sf$label,
                          color="steelblue")
     })
-}
 
+}

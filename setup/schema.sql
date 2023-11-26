@@ -8,48 +8,47 @@ CREATE TABLE config (
 );
 
 CREATE TABLE activities (
-  activity_id INTEGER PRIMARY KEY,
+  activity_id UBIGINT PRIMARY KEY,
   activity_type TEXT,
   name TEXT,
   start_time TIMESTAMP,
-  distance REAL,
-  duration REAL,
-  elevation REAL,
+  distance DOUBLE,
+  duration DOUBLE,
+  elevation DOUBLE,
   FOREIGN KEY(activity_type) REFERENCES activity_types(activity_type)
 );
 
 CREATE TABLE heartrate (
-  activity_id,
+  activity_id UBIGINT,
   time TIMESTAMP,
-  heartrate REAL NOT NULL,
+  heartrate DOUBLE NOT NULL,
   PRIMARY KEY(activity_id, time),
   FOREIGN KEY(activity_id) REFERENCES activities(activity_id)
 );
 
 CREATE TABLE fitness (
-  activity_id,
-  hrss REAL,
-  PRIMARY KEY(activity_id),
+  activity_id UBIGINT PRIMARY KEY,
+  hrss DOUBLE,
   FOREIGN KEY(activity_id) REFERENCES activities(activity_id)
 );
 
 CREATE TABLE location (
-  activity_id INTEGER,
+  activity_id UBIGINT,
   time TIMESTAMP,
-  lat REAL NOT NULL,
-  lon REAL NOT NULL,
+  lat DOUBLE NOT NULL,
+  lon DOUBLE NOT NULL,
   PRIMARY KEY(activity_id, time),
   FOREIGN KEY(activity_id) REFERENCES activities(activity_id)
 );
 
 CREATE TABLE athlete (
   athlete_id INTEGER PRIMARY KEY,
-  height REAL,
-  weight REAL,
-  maxHR REAL,
-  restHR REAL,
-  thresholdHR REAL
+  height DOUBLE,
+  weight DOUBLE,
+  maxHR DOUBLE,
+  restHR DOUBLE,
+  thresholdHR DOUBLE
 );
 
-INSERT INTO activity_types VALUES("Run");
-INSERT INTO activity_types VALUES("Ride");
+INSERT INTO activity_types(activity_type) VALUES('Run');
+INSERT INTO activity_types(activity_type) VALUES('Ride');

@@ -12,7 +12,8 @@ ui <- dashboardPage(
                     tags$li(actionLink("refresh", label = "", icon = icon("arrows-rotate")),
                             class = "dropdown"),
                     tags$li(actionLink("settings", label = "", icon = icon("gear")),
-                            class = "dropdown")
+                            class = "dropdown"),
+                    uiOutput("stravaConnectPlaceholder")
     ),
     dashboardSidebar(
         sidebarMenu(
@@ -20,14 +21,19 @@ ui <- dashboardPage(
             menuItem("Mileage", tabName = "mileage", icon = icon("chart-line")),
             menuItem("Training", tabName = "fitness", icon = icon("heart")),
             menuItem("Routes", tabName = "routes", icon = icon("map")),
-            uiOutput("activity_type_select_wrapper")
+            uiOutput("activity_type_select_wrapper"),
+            img(src="resources/api_logo_pwrdBy_strava_stack_light.png", class="powered-by-logo")
         )
     ),
     dashboardBody(
         uiOutput("redirect_js"),
+        tags$head(
+            tags$link(rel="stylesheet", type="text/css",
+                      href="app.css"),
+        ),
         useShinyjs(),
         bsTooltip(id = "refresh", 
-                  title = "Sync activities from Strava"),
+                  title = "Sync activities"),
         bsTooltip(id = "settings", 
                   title = "Update athlete and app settings"),
         tabItems(
@@ -80,7 +86,7 @@ ui <- dashboardPage(
                                 withSpinner(leafletOutput("routes")),
                                 status="success",
                                 solidHeader = TRUE,
-                                width=6),
+                                width=12),
                             width=12,
                             offset=3
                         )
