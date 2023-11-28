@@ -83,12 +83,11 @@ ui <- dashboardPage(
                     fluidRow(
                         column(
                             box(title="Routes",
-                                withSpinner(leafletOutput("routes")),
+                                withSpinner(leafletOutput("routes", height=600)),
                                 status="success",
                                 solidHeader = TRUE,
                                 width=12),
                             width=12,
-                            offset=3
                         )
                     )
             )

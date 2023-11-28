@@ -1,10 +1,5 @@
 library(data.table)
-library(ggmap)
-library(gganimate)
-library(ggrepel)
-library(lubridate)
 library(tidyverse)
-library(hms)
 library(DBI)
 library(shinyjs)
 library(shiny)
@@ -226,11 +221,11 @@ handle_export_archive <- function(archive) {
                          old=c("timestamp", "heart_rate", "position_lat", "position_long"),
                          new=c("time", "heartrate", "lat", "lon"),
                          skip_absent = TRUE)
-                df_raw <- df_raw[, .(time, 
-                                     heartrate=ifelse("heartrate"%in%names(df_raw), heartrate, NA),
-                                     lat=ifelse("lat"%in%names(df_raw), lat, NA),
-                                     lon=ifelse("lon"%in%names(df_raw), lon, NA)
-                                     )]
+                # Add columns if missing
+                if (! "lat" %in% names(df_raw)) df_raw[, lat := NA]
+                if (! "lon" %in% names(df_raw)) df_raw[, lon := NA]
+                if (! "heartrate" %in% names(df_raw)) df_raw[, heartrate := NA]
+                df_raw <- df_raw[, .(time, heartrate, lat, lon)]
                 
                 # Add activity_id
                 df_raw[, filename_id := this_filename_id ]
@@ -275,7 +270,9 @@ handle_export_archive <- function(archive) {
                 setnames(gpx_data, old=c('Time', 'Latitude', 'Longitude'), new=c('time', 'lat', 'lon'), skip_absent = TRUE)
                 # load activity_id and set to first column
                 gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
-                gpx_data[, heartrate := NA]  # Need unused column for heartrate
+                if (! "lat" %in% names(gpx_data)) gpx_data[, lat := NA]
+                if (! "lon" %in% names(gpx_data)) gpx_data[, lon := NA]
+                if (! "heartrate" %in% names(gpx_data)) gpx_data[, heartrate := NA]
                 setcolorder(gpx_data, c('activity_id', 'time', 'heartrate', 'lat', 'lon'))
                 
                 create_activities(all_activities |> filter(activity_id == this_activity_id) |> select(-filename_id))
@@ -372,7 +369,9 @@ update_athlete_modal <- function(default_activity, failed=FALSE, first_time=FALS
 }
 
 get_logged_in_user <- function(auth) {
-    # TODO handle non 200
+    # TODO handle non 200. Return NULL and in the calling code check for this and display the same
+    # log in button
+    # Also flash up a message saying unable to identify logged in user, try deleting .httr-oauth
     user <- GET("https://www.strava.com/api/v3/athlete", auth)
     raw <- content(user)
     raw[c('username', 'profile_medium')]
@@ -395,7 +394,7 @@ get_recent_activities_meta <- function(auth) {
         all_activities <- GET("https://www.strava.com/api/v3/athlete/activities", auth,
                               query=list(after=most_recent_activity, per_page=page_size,
                                          page=i))
-        # TODO error handle non 200!
+        # TODO error handle non 200! display error msg and do next
         page_activities <- content(all_activities)
         results <- append(results, page_activities)
         if (length(page_activities) < page_size) break
@@ -426,6 +425,7 @@ get_recent_activities_meta <- function(auth) {
 # For each activity, get the associated stream
 get_stream <- function(id, auth) {
     # TODO error handle non-200!
+    # dt <- data.table(activity_id=numeric(), time_offset=numeric(), heartrate=numeric(), lat=numeric(), lon=numeric())
     raw <- GET(sprintf("https://www.strava.com/api/v3/activities/%s/streams/heartrate,latlng", id), 
                   auth, query=list(key_by_type='true', series_type='time'))
     res <- content(raw)
@@ -884,9 +884,9 @@ server <- function(input, output, session) {
             filter(activity_type %in% types) |>
             select(start_time, distance) |>
             collect() |>
+            mutate(date = as_date(start_time)) |>
             setDT()
-        dt[, date := as_date(start_time)]
-        dt[, .(distance = sum(distance)), by=date]
+        dt <- dt[, .(distance = sum(distance)), by=date]
         validate(need(nrow(dt) > 0, "No activities found"))
         dt
     })
@@ -941,9 +941,9 @@ server <- function(input, output, session) {
             inner_join(tbl(con, "location"), by="activity_id") |>
             select(activity_id, name, time, lat, lon) |>
             collect() |>
+            mutate(date = as_date(time)) |>
             setDT()
         
-        dt[, date := as_date(time)]
         setorder(dt, time)
         validate(need(nrow(dt) > 0, "No activities found"))
         dt
@@ -1153,8 +1153,8 @@ server <- function(input, output, session) {
     output$routes <- renderLeaflet({
         df <- routes_df()
         df_sf <- df |> 
-            arrange(time) |>
             group_by(activity_id, name, date) |>
+            arrange(time) |>
             nest() |>
             mutate(line = map(data, function(x) st_linestring(as.matrix(x |> select(lon, lat))))) |>
             select(-data) |>
@@ -1165,8 +1165,10 @@ server <- function(input, output, session) {
         df_sf |>
             leaflet() |>
             addTiles() |>
-            addPolylines(label=df_sf$label,
+            addPolylines(label=~label,
                          color="steelblue")
     })
 
 }
+
+# TODO error handle non 200s
