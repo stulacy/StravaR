@@ -51,6 +51,13 @@ TRAINING_BANDS[, c("upper", "lower") := .(FORM_OFFSET - upper,
                                  FORM_OFFSET - lower)]
 TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
 
+CONNECT_TO_STRAVA_BUTTON <- tags$li(
+                actionLink(
+                    "connectStrava",
+                    label=img(src="resources/btn_strava_connectwith_orange.png"),
+                ),
+                class = "dropdown")
+
 insert_or_update_default_activity <- function(value) {
     default_exists <- nrow(tbl(con, "config") |> collect() |> filter(property == 'default_activity')) > 0
     if (default_exists) {
@@ -369,10 +376,10 @@ update_athlete_modal <- function(default_activity, failed=FALSE, first_time=FALS
 }
 
 get_logged_in_user <- function(auth) {
-    # TODO handle non 200. Return NULL and in the calling code check for this and display the same
-    # log in button
-    # Also flash up a message saying unable to identify logged in user, try deleting .httr-oauth
     user <- GET("https://www.strava.com/api/v3/athlete", auth)
+    if (user$status_code != 200) {
+        return(NULL)
+    }
     raw <- content(user)
     raw[c('username', 'profile_medium')]
 }
@@ -394,7 +401,11 @@ get_recent_activities_meta <- function(auth) {
         all_activities <- GET("https://www.strava.com/api/v3/athlete/activities", auth,
                               query=list(after=most_recent_activity, per_page=page_size,
                                          page=i))
-        # TODO error handle non 200! display error msg and do next
+        if (all_activities$status_code != 200) {
+            showNotification("Error occurred when trying to retrieve activities, try again later.",
+                             type="error", duration=3)
+            next
+        }
         page_activities <- content(all_activities)
         results <- append(results, page_activities)
         if (length(page_activities) < page_size) break
@@ -424,14 +435,14 @@ get_recent_activities_meta <- function(auth) {
 
 # For each activity, get the associated stream
 get_stream <- function(id, auth) {
-    # TODO error handle non-200!
-    # dt <- data.table(activity_id=numeric(), time_offset=numeric(), heartrate=numeric(), lat=numeric(), lon=numeric())
     raw <- GET(sprintf("https://www.strava.com/api/v3/activities/%s/streams/heartrate,latlng", id), 
                   auth, query=list(key_by_type='true', series_type='time'))
-    res <- content(raw)
-    dt <- data.table(
-        activity_id=id,
-        time_offset = as.numeric(res$time$data))
+    if (raw$status_code != 200) {
+        dt <- data.table(activity_id=numeric(), time_offset=numeric(), heartrate=numeric(), lat=numeric(), lon=numeric())
+    } else {
+        res <- content(raw)
+        dt <- data.table(activity_id=id, time_offset = as.numeric(res$time$data))
+    }
     
     if ("heartrate" %in% names(res)) {
         dt[, heartrate := as.numeric(res$heartrate$data)]
@@ -951,7 +962,6 @@ server <- function(input, output, session) {
     
     output$mileage_cumulative <- renderPlotly({
         df2 <- mileage_df()
-        # TODO should this create a copy instead?
         df2[, c('Year', 'Date') := .(as.factor(year(date)), 
                                      as_datetime(sprintf("2000-%d-%d", 
                                                          month(date),
@@ -1131,22 +1141,23 @@ server <- function(input, output, session) {
     
     output$stravaConnectPlaceholder <- renderUI({
         if (is.null(AUTH_HEADER)) {
-        tags$li(
-            actionLink(
-                "connectStrava",
-                label=img(src="resources/btn_strava_connectwith_orange.png"),
-            ),
-            class = "dropdown")
+            CONNECT_TO_STRAVA_BUTTON
         } else {
             user <- get_logged_in_user(AUTH_HEADER)
-            tags$li(
-                div(
-                    a(href="https://strava.com",
-                      span(user$username, class="strava-profile-text")),
-                    img(src=user$profile_medium, class="strava-profile-image"),
-                    class="strava-profile-container"
-                )
-            )
+            if (is.null(user)) {
+                showNotification(sprintf("Unable to identify logged in user, try deleting %s and trying again.", OAUTH_CACHE),
+                                 type="error", duration=3)
+                CONNECT_TO_STRAVA_BUTTON
+            } else {
+                tags$li(
+                  div(
+                      a(href="https://strava.com",
+                        span(user$username, class="strava-profile-text")),
+                      img(src=user$profile_medium, class="strava-profile-image"),
+                      class="strava-profile-container"
+                  )
+                )  
+            }
         }
     })
     
@@ -1170,5 +1181,3 @@ server <- function(input, output, session) {
     })
 
 }
-
-# TODO error handle non 200s
