@@ -29,7 +29,7 @@ Finally, when I haven't got a specific race planned, my main motivation comes fr
 
 ### Installation
 
-1.  Clone this repository to your computer (within RStudio, File -\> New Project -\> Version Control -\> Git, then enter `https://github.com/stulacy/fit-viz.git` as the Repository URL)
+1.  Clone this repository to your computer (within RStudio, File -\> New Project -\> Version Control -\> Git, then enter `https://github.com/stulacy/StravaR.git` as the Repository URL)
 2.  Install any missing packages that are loaded in `server.R`. RStudio should highlight these.
 3.  Download an archive of all your Strava data, which is found in the (deliberately?) confusingly named page [Delete Your Account (NB: this link WILL NOT delete your account!)](https://www.strava.com/athlete/delete_your_account). If you don't want to click that scary link, in a web browser click your Profile Pic in the top right, Settings, My Account, scroll down to Download or Delete Your Account and click Get Started. Your archive will be emailed to you shortly
 4.  Open either of `server.R`, `ui.R`, or `app.R` in RStudio and click the down arrow next to Run App button in the top right of the editor and select 'Run External'
