@@ -6,6 +6,7 @@ data/raw
 *.gz
 *.rds
 *.db
+*.wal
 *.Rproj
 .Rproj.user/
 plots/

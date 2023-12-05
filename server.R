@@ -301,7 +301,6 @@ server <- function(input, output, session) {
         all_dates <- calendar_raw$all_dates
         month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
         
-        # TODO can't this be calculated from df_wide?
         df_raw <- activities_summary() |> 
             filter(date >= min(all_dates$date)) |> 
             as.data.table()
