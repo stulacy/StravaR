@@ -1,24 +1,40 @@
 library(data.table)
-library(ggmap)
-library(gganimate)
-library(ggrepel)
-library(lubridate)
 library(tidyverse)
-library(hms)
 library(DBI)
-library(RSQLite)
 library(shinyjs)
 library(shiny)
 library(DT)
 library(zoo)
 library(leaflet)
+library(FITfileR)
+library(duckdb)
+library(gpx)
 library(sf)
 library(plotly)
+library(httr)
 source("utils.R")
 
-con <- dbConnect(SQLite(), "data/strava.db")
-ACTIVITY_TYPES <- tbl(con, "activity_types") |>
-                    pull(activity_type)
+PORT <- 8100
+options(shiny.port=PORT)
+options(shiny.maxRequestSize=200*1024^2)
+APP_URL <- sprintf("http://localhost:%d/", PORT)
+DB_FN <- "data.db"
+
+STRAVA_APP_NAME <- 'FitViz'
+STRAVA_APP <- oauth_app(appname = STRAVA_APP_NAME,
+                        key = Sys.getenv("FITVIZ_CLIENTID"), 
+                        redirect_uri = APP_URL,
+                        secret = Sys.getenv("FITVIZ_SECRET"))  
+STRAVA_END <- oauth_endpoint(
+    authorize = "https://www.strava.com/oauth/authorize",
+    access = "https://www.strava.com/oauth/token")
+STRAVA_SCOPE <- "activity:read_all"
+STRAVA_URL <- oauth2.0_authorize_url(STRAVA_END, STRAVA_APP, scope = STRAVA_SCOPE)
+REDIRECT_STRAVA_AUTH <- sprintf("Shiny.addCustomMessageHandler('redirect_strava', function(message) {window.location = '%s';});", 
+                                STRAVA_URL)
+OAUTH_CACHE <- ".httr-oauth"
+AUTH_HEADER <- NULL
+
 YEARS <- seq(from=2018, to=2022, by=1)
 N_YEARS <- length(YEARS)
 FORM_OFFSET <- 40
@@ -35,168 +51,236 @@ TRAINING_BANDS[, c("upper", "lower") := .(FORM_OFFSET - upper,
                                  FORM_OFFSET - lower)]
 TRAINING_BANDS[, mid := lower + (upper - lower) / 2 ]
 
-function(input, output, session) {
+CONNECT_TO_STRAVA_BUTTON <- tags$li(
+                actionLink(
+                    "connectStrava",
+                    label=img(src="resources/btn_strava_connectwith_orange.png"),
+                ),
+                class = "dropdown")
+
+server <- function(input, output, session) {
+    # Javascript to add redirect to the Strava auth page
+    output$redirect_js <- renderUI({
+        tags$head(tags$script(REDIRECT_STRAVA_AUTH))
+    })
     
-    fitness_updated <- reactiveVal(value=FALSE)
-    initial_default_activity <- tbl(con, "config") |>
-                            filter(property == 'default_activity') |>
-                            pull(value)
-    default_activity <- reactiveVal(value=initial_default_activity)
+    # Connect to and create DB if doesn't exist
+    con <- dbConnect(duckdb(), DB_FN)
+    if (length(dbListTables(con)) == 0) {
+        create_db(con)
+    }
     
-    # Get all dates from last 52 weeks
-    days_til_sunday <- 7 - wday(today(), week_start=1)
-    first_day <- today() + days(days_til_sunday) - weeks(52) + days(1)
-    all_dates <- data.table(date=seq.Date(from=first_day, to=today() + days(days_til_sunday), by="day"))
-    all_dates[, c("wday", "week", "year") := .(wday(date, week_start=1),
-                                               isoweek(date),
-                                               year(date))]
-    all_dates[, year_diff := year - min(year)]
-    all_dates[, week := week + year_diff * 52]
-    # The first days before Monday in the new Year will be off,
-    # since technically they'll be week 52 and will add an additional 52
-    all_dates[ week == 104, week := 52]
-    all_dates[, week := paste0("week_", week - min(week))]
-    all_dates[, c('year_diff', 'year') := NULL]
+    # If we're coming back from an OAuth request, complete the auth process
+    params <- parseQueryString(isolate(session$clientData$url_search))
+    if (has_auth_code(params)) {
+        # Are we coming back from an OAuth request?
+        # Manually create a token, cache it, about to load it next
+        token <- oauth2.0_token(
+            app = STRAVA_APP,
+            endpoint = STRAVA_END,
+            credentials = oauth2.0_access_token(STRAVA_END, STRAVA_APP, params$code),
+            scope=STRAVA_SCOPE,
+        )
+        token$cache(OAUTH_CACHE)
+    }
+    AUTH_HEADER <<- load_strava_auth_from_cache(OAUTH_CACHE, STRAVA_APP_NAME)
     
-    # Work out the week number with first months
-    all_dates[ wday == 1, month := month(date)]
-    month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
-    
-    update_athlete_modal <- function(failed=FALSE) {
-        curr_settings <- tbl(con, "athlete") |>
-                            collect() |>
-                            as.list()
-        modalDialog(
-            title = "Update settings",
-            h4("Athlete Settings"),
-            textInput("update_height", "Height (cm)", value=curr_settings$height),
-            textInput("update_weight", "Weight (cm)", value=curr_settings$weight),
-            textInput("update_maxHR", "Maximum heartrate (bpm)", value=curr_settings$maxHR),
-            textInput("update_restHR", "Resting heartrate (bpm)", value=curr_settings$restHR),
-            textInput("update_thresholdHR", "Threshold heartrate (bpm)", value=curr_settings$thresholdHR),
-            if (failed) {
-                div(tags$b("Values must be positive numbers", style="color: red;"))
-            },
-            hr(),
-            h4("App Settings"),
-            radioButtons("update_default_activity", "Default activity",
-                         choices=ACTIVITY_TYPES, selected=default_activity()),
-            easyClose = TRUE,
-            fade=FALSE,
-            footer=tagList(
-                modalButton("Cancel"),
-                actionButton("update_settings", "Update settings and recalculate training scores")
+    # Prompt the user to configure settings on first use
+    n_activities <- tbl(con, "activities") |> count() |> pull()
+    if (n_activities == 0 && !has_auth_code(params)) {
+        showModal(
+            modalDialog(
+                title = "Initial setup",
+                h4("Let's get things setup!"),
+                easyClose = FALSE,
+                fade=FALSE,
+                footer=tagList(
+                    modalButton("Some other time"),
+                    actionButton("show_setup_athlete", "Continue")
+                )
             )
         )
     }
     
-    observeEvent(input$settings, {
-        showModal(update_athlete_modal())
+    fitness_updated <- reactiveVal(value=FALSE)
+    activities_synced <- reactiveVal(value=0)
+    initial_default_activity <- tbl(con, "config") |>
+                            filter(property == 'default_activity') |>
+                            pull(value)
+    if (length(initial_default_activity) == 0) {
+        initial_default_activity <- 'Run'
+    }
+    default_activity <- reactiveVal(value=initial_default_activity)
+    
+    observeEvent(input$show_setup_athlete, {
+        showModal(update_athlete_modal(default_activity(), con, first_time = TRUE))
     })
     
-    observeEvent(input$update_settings, {
-        # Update default activity if changed, needing to update:
-        # this session (UI) and BD
-        if (input$update_default_activity != default_activity()) {
-            default_activity(input$update_default_activity)
-            q <- dbSendStatement(con, "UPDATE config SET 
-                                    value = ?
-                                  WHERE property = 'default_activity';",
-                              params=list(input$update_default_activity))
-            dbClearResult(q)
+    observeEvent(input$settings, {
+        showModal(update_athlete_modal(default_activity(), con))
+    })
+    
+    observeEvent(input$refresh, {
+        has_data <- tbl(con, "activities") |> count() |> pull(n) > 0
+        tags <- list(
+            modalButton("Cancel"),
+            actionButton("import", "Bulk import Strava export")
+        )
+        if (has_data) {
+            text <- "New activities can either be downloaded directly from the Strava API or through an exported Strava archive."
+            tags[[3]] <- actionButton("sync", "Sync data")
+        } else {
+            text <- "The first data upload must be from a Strava export, subsequent ones can 1-click sync directly with Strava."
         }
+        showModal(
+            modalDialog(
+                title = "Download recent activities",
+                p(text),
+                easyClose = TRUE,
+                fade=FALSE,
+                footer=do.call(tagList, tags)
+            )
+        )
+    })
+    
+    observeEvent(input$connectStrava, {
+        authenticate_strava(session)
+    })
+    
+    
+    observeEvent(input$sync, {
+        removeModal()
+        if (sync(session, con, OAUTH_CACHE, AUTH_HEADER)) {
+            activities_synced(activities_synced() + 1)
+        }
+    })
+    
+    observeEvent(input$import, {
+        removeModal()
+        showImportModal()
+    })
+    
+    
+    observeEvent(input$archive_upload, {
+        handle_export_archive(input$archive_upload, con)
+        activities_synced(activities_synced() + 1)
+        removeModal()
+    })
+    
+    
+    observeEvent(input$insert_settings, {
+        default_activity(input$update_default_activity)
+        insert_or_update_default_activity(input$update_default_activity, con)
         
-        # Updating athlete values is more complex
-        # First want to validate they are positive numbers
-        new_vals <- data.frame(
+        athlete_inputs <- data.frame(
             height=input$update_height,
             weight=input$update_weight,
             maxHR=input$update_maxHR,
             restHR=input$update_restHR,
             thresholdHR=input$update_thresholdHR
         )
-        validated <- TRUE
-        new_vals <- mutate_all(new_vals, as.numeric)
-        if (any(is.na(new_vals)) || any(new_vals < 0)) validated <- FALSE
         
-        if (validated) {
-            # Update DB with the new values, update fitness scores,
-            # and trigger replot of fitness plot
-            q <- dbSendStatement(con, "UPDATE athlete SET 
-                                    height = ?,
-                                    weight = ?,
-                                    maxHR = ?,
-                                    restHR = ?,
-                                    thresholdHR = ?
-                                  WHERE athlete_id = 1;",
-                              params=as.list(unname(new_vals)))
-            dbClearResult(q)
-            # TODO should refactor into function
-            fit <- hr <- tbl(con, "heartrate") |> collect() |> as.data.table()
-            hrss <- fit[!is.na(heartrate), 
-                         .(hrss = calculate_hrss(heartrate,
-                                                 time,
-                                                 new_vals$maxHR,
-                                                 new_vals$restHR,
-                                                 new_vals$thresholdHR,
-                                                 )), 
-                             by=.(activity_id)]
-            q <- dbSendStatement(con, "DELETE FROM fitness;")
-            dbClearResult(q)
-            dbAppendTable(con, "fitness", hrss)
-            fitness_updated(TRUE)  # Triggers a redraw of the training plot
-            removeModal()
-        } else {
-            showModal(update_athlete_modal(failed=TRUE))
+        validated <- insert_or_update_athlete(athlete_inputs, con)
+        if (!validated) {
+            showModal(update_athlete_modal(default_activity(), con, failed=TRUE, first_time = TRUE))
+            return()
         }
+        
+        # Now prompt to sync data
+        showModal(
+            modalDialog(
+                title = "Add activities",
+                p("Great, now let's get some data! Your first upload must be from a Strava export, afterwards you can 1-click sync."),
+                easyClose = FALSE,
+                fade=FALSE,
+                footer=tagList(
+                    modalButton("Cancel"),
+                    actionButton("import", "Bulk import Strava export")
+                )
+            )
+        )
+    })
+    
+    observeEvent(input$update_settings, {
+        # Update default activity
+        default_activity(input$update_default_activity)
+        insert_or_update_default_activity(input$update_default_activity, con)
+        
+        # Update athlete
+        athlete_inputs <- data.frame(
+            height=input$update_height,
+            weight=input$update_weight,
+            maxHR=input$update_maxHR,
+            restHR=input$update_restHR,
+            thresholdHR=input$update_thresholdHR
+        )
+        validated <- insert_or_update_athlete(athlete_inputs, con)
+        if (!validated) {
+            showModal(update_athlete_modal(default_activity(), con, failed=TRUE))
+            return()
+        }
+        
+        # Update fitness
+        update_fitness(con)
+        fitness_updated(TRUE)  # Triggers a redraw of the training plot
+        removeModal()
     })
     
     output$activity_type_select_wrapper <- renderUI({
+        activity_types <- tbl(con, "activity_types") |> pull(activity_type)
         checkboxGroupInput("activity_type_select",
                            "Activity Type",
-                           ACTIVITY_TYPES,
+                           activity_types,
                            selected=default_activity())
     })
     
-    output$activities <- renderDT({
-        req(input$activity_type_select)
+    activities_summary <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
-        tbl(con, "activities") |>
+        df <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             collect() |>
-            mutate(start_time = as_datetime(start_time),
+            mutate(start_time = start_time,
                    name = sprintf("<a href='https://strava.com/activities/%s'>%s</a>", 
                                   activity_id, 
                                   name),
-                   Date = as_date(start_time),
+                   date = as_date(start_time),
                    distance = round(distance, 1),
                    elevation = round(elevation),
                    duration = as.period(duration(duration, units="secs")),
                    dur_fmt = sprintf("%dh %dm %ds", hour(duration),
                                      minute(duration),
-                                     second(duration)),
+                                     round(second(duration))),
                    dur_fmt = gsub("0h ", "", dur_fmt)) |>
             arrange(desc(start_time)) |>
             select(
-                Date,
+                date,
+                activity_type,
+                name,
+                distance,
+                dur_fmt,
+                elevation
+           )
+        validate(need(nrow(df) > 0, "No activities found"))
+        df
+    }, ignoreInit = TRUE)
+    
+    output$activities <- renderDT({
+        activities_summary() |>
+            rename(
+                Date=date,
                 Type=activity_type,
                 Name=name,
                 `Distance (km)`=distance,
                 Duration=dur_fmt,
                 `Elevation (m)`=elevation
-           )
+               )
     }, escape=FALSE)
     
-    output$calendar <- renderPlotly({
-        # TODO Make dataset reactive on input, so this render is just 
-        # dependent on the dataset
-        req(input$activity_type_select)
-        type <- input$activity_type_select
-        df_raw <- tbl(con, "activities") |>
-            filter(start_time >= local(as.numeric(as_datetime(first_day))),
-                   activity_type %in% type) |>
-            collect() |>
-            mutate(date = as_date(as_datetime(start_time))) |>
+    activities_calendar <- eventReactive(activities_summary(), {
+        # Calculate daily total distance for each day of last year
+        all_dates <- get_calendar_dates()
+        df_raw <- activities_summary() |>
+            filter(date >= min(all_dates$date)) |>
             setDT()
         df <- df_raw[, .(distance = sum(distance)), by=.(date)]
         
@@ -208,6 +292,18 @@ function(input, output, session) {
         setorder(df_wide, -wday)
         setcolorder(df_wide, c("wday", paste("week", 0:51, sep="_")))
         setnafill(df_wide, fill=0)
+        list(calendar=df_wide, all_dates=all_dates)
+    }, ignoreInit = FALSE)
+    
+    output$calendar <- renderPlotly({
+        calendar_raw <- activities_calendar()
+        df_wide <- calendar_raw$calendar
+        all_dates <- calendar_raw$all_dates
+        month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
+        
+        df_raw <- activities_summary() |> 
+            filter(date >= min(all_dates$date)) |> 
+            as.data.table()
         week_avg <- df_raw[ date > (today() - days(7)), .(mu=round(mean(distance)))]$mu
         if (length(week_avg) == 0) week_avg <- 0
         
@@ -222,7 +318,6 @@ function(input, output, session) {
             ygap=2,
             showscale=FALSE
         ) |>
-            config(displayModeBar=FALSE) |>
             layout(yaxis=list(scaleanchor='x', scaleratio=1,
                               zeroline=FALSE,
                               constrain="domain",
@@ -241,28 +336,32 @@ function(input, output, session) {
                                          "Oct", "Nov", "Dec")),
                    title=sprintf("%d %ss in the last year with an average of %dkm\n%d in the last week with an average of %dkm", 
                                  nrow(df_raw),
-                                 tolower(paste(type, collapse='+')),
+                                 tolower(paste(unique(df_raw$activity_type), collapse='+')),
                                  round(mean(df_raw$distance)),
                                  sum(df_raw$date > (today() - days(7))),
                                  week_avg
                                  )
-                   )
+                   ) |>
+            plotly::config(displayModeBar=FALSE) 
     })
     
-    mileage_df <- eventReactive(input$activity_type_select, {
+    mileage_df <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
         dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             select(start_time, distance) |>
             collect() |>
+            mutate(date = as_date(start_time)) |>
             setDT()
-        dt[, date := as_date(as_datetime(start_time))]
-        dt[, .(distance = sum(distance)), by=date]
+        dt <- dt[, .(distance = sum(distance)), by=date]
+        validate(need(nrow(dt) > 0, "No activities found"))
+        dt
     })
     
     hrss <- eventReactive({
             input$activity_type_select
             fitness_updated()
+            activities_synced()
         }, 
         {
         types <- input$activity_type_select
@@ -270,8 +369,9 @@ function(input, output, session) {
                         inner_join(tbl(con, "activities"), by="activity_id") |>
                         filter(activity_type %in% types) |>
                         collect() |>
-                        mutate(date = as_date(as_datetime(start_time))) |>
+                        mutate(date = as_date(start_time)) |>
                         setDT()
+        validate(need(nrow(hrss) > 0, "No activities found"))
         # Summarise per date
         hrss <- hrss[, .(hrss = sum(hrss)), by=date][order(date)]
         # Make entry for every day as need to run equation everyday as time isn't
@@ -301,18 +401,18 @@ function(input, output, session) {
         hrss
     })
     
-    routes_df <- eventReactive(input$activity_type_select, {
+    routes_df <- eventReactive(c(input$activity_type_select, activities_synced()), {
         types <- input$activity_type_select
         dt <- tbl(con, "activities") |>
             filter(activity_type %in% types) |>
             inner_join(tbl(con, "location"), by="activity_id") |>
             select(activity_id, name, time, lat, lon) |>
             collect() |>
+            mutate(date = as_date(time)) |>
             setDT()
         
-        dt[, time := as_datetime(time)]
-        dt[, date := as_date(time)]
         setorder(dt, time)
+        validate(need(nrow(dt) > 0, "No activities found"))
         dt
     })
     
@@ -364,7 +464,7 @@ function(input, output, session) {
         
         ggplotly(p, tooltip=c('colour', 'x', 'y')) |>
             layout(yaxis = list(hoverformat = '.5f'),
-                   xaxis = list(title=""))
+                   xaxis = list(title="", tickformat="%b"))
     })
     
     output$mileage_weekly <- renderPlotly({
@@ -372,6 +472,8 @@ function(input, output, session) {
         all_dates <- data.table(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
         df <- merge(df, all_dates, on='date', all.y=TRUE)
         df[, distance := ifelse(is.na(df$distance), 0, df$distance)]
+        df <- df[, .(distance = sum(distance, na.rm=T)), by=.(date)]
+        # Have date, start_time, distance, Year, Date, Distance, label
         df[, weeklyrate := rollsum(zoo(distance, date), 7, fill=NA)]
         df[, mileage := rollmean(zoo(weeklyrate, date), 7, fill=NA)]
         
@@ -489,14 +591,37 @@ function(input, output, session) {
          subplot(p1, p2, p3, shareX = TRUE, nrows=3,
                       titleY=TRUE) |>
             layout(hovermode="x unified",
-                   xaxis=list(title=""))
+                   xaxis=list(title="", 
+                              range=c(today() - months(1), today())))
+    })
+    
+    output$stravaConnectPlaceholder <- renderUI({
+        if (is.null(AUTH_HEADER)) {
+            CONNECT_TO_STRAVA_BUTTON
+        } else {
+            user <- get_logged_in_user(AUTH_HEADER)
+            if (is.null(user)) {
+                showNotification(sprintf("Unable to identify logged in user, try deleting %s and trying again.", OAUTH_CACHE),
+                                 type="error", duration=3)
+                CONNECT_TO_STRAVA_BUTTON
+            } else {
+                tags$li(
+                  div(
+                      a(href="https://strava.com",
+                        span(user$username, class="strava-profile-text")),
+                      img(src=user$profile_medium, class="strava-profile-image"),
+                      class="strava-profile-container"
+                  )
+                )  
+            }
+        }
     })
     
     output$routes <- renderLeaflet({
         df <- routes_df()
         df_sf <- df |> 
-            arrange(time) |>
             group_by(activity_id, name, date) |>
+            arrange(time) |>
             nest() |>
             mutate(line = map(data, function(x) st_linestring(as.matrix(x |> select(lon, lat))))) |>
             select(-data) |>
@@ -507,7 +632,11 @@ function(input, output, session) {
         df_sf |>
             leaflet() |>
             addTiles() |>
-            addPolylines(label=df_sf$label,
+            addPolylines(label=~label,
                          color="steelblue")
+    })
+    
+    onStop(function() {
+        dbDisconnect(con, shutdown=TRUE)
     })
 }

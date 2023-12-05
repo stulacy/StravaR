@@ -1,15 +1,19 @@
 library(shiny)
 library(shinyjs)
+library(shinyBS)
 library(shinydashboard)
 library(shinycssloaders)
 library(DT)
 library(leaflet)
 library(plotly)
 
-dashboardPage(
+ui <- dashboardPage(
     dashboardHeader(title="StravaR",
+                    tags$li(actionLink("refresh", label = "", icon = icon("arrows-rotate")),
+                            class = "dropdown"),
                     tags$li(actionLink("settings", label = "", icon = icon("gear")),
-                            class = "dropdown")
+                            class = "dropdown"),
+                    uiOutput("stravaConnectPlaceholder")
     ),
     dashboardSidebar(
         sidebarMenu(
@@ -17,11 +21,21 @@ dashboardPage(
             menuItem("Mileage", tabName = "mileage", icon = icon("chart-line")),
             menuItem("Training", tabName = "fitness", icon = icon("heart")),
             menuItem("Routes", tabName = "routes", icon = icon("map")),
-            uiOutput("activity_type_select_wrapper")
+            uiOutput("activity_type_select_wrapper"),
+            img(src="resources/api_logo_pwrdBy_strava_stack_light.png", class="powered-by-logo")
         )
     ),
     dashboardBody(
+        uiOutput("redirect_js"),
+        tags$head(
+            tags$link(rel="stylesheet", type="text/css",
+                      href="app.css"),
+        ),
         useShinyjs(),
+        bsTooltip(id = "refresh", 
+                  title = "Sync activities"),
+        bsTooltip(id = "settings", 
+                  title = "Update athlete and app settings"),
         tabItems(
             tabItem(tabName = "data",
                     fluidRow(
@@ -69,12 +83,11 @@ dashboardPage(
                     fluidRow(
                         column(
                             box(title="Routes",
-                                withSpinner(leafletOutput("routes")),
+                                withSpinner(leafletOutput("routes", height=600)),
                                 status="success",
                                 solidHeader = TRUE,
-                                width=6),
+                                width=12),
                             width=12,
-                            offset=3
                         )
                     )
             )

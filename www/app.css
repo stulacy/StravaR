@@ -1,0 +1,25 @@
+ul.navbar-nav {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+
+.strava-profile-text {
+    font-weight: bold;
+    font-size: larger;
+}
+.strava-profile-image {
+    max-width: 30px;
+    margin-left: 0.5em;
+    margin-right: 2em;
+}
+
+.strava-profile-container {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+.powered-by-logo {
+    position: absolute;
+    bottom: 0px;
+}
