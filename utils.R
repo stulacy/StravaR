@@ -10,12 +10,12 @@ calculate_hrss <- function(hr, ts, HRmax, HRrest, LTHR, k=1.92) {
 
 get_calendar_dates <- function() {
     # Get all dates from last 52 weeks
-    days_til_sunday <- 7 - wday(today(), week_start=1)
+    days_til_sunday <- 7 - lubridate::wday(today(), week_start=1)
     first_day <- today() + days(days_til_sunday) - weeks(52) + days(1)
     all_dates <- data.table(date=seq.Date(from=first_day, to=today() + days(days_til_sunday), by="day"))
-    all_dates[, c("wday", "week", "year") := .(wday(date, week_start=1),
-                                               isoweek(date),
-                                               year(date))]
+    all_dates[, c("wday", "week", "year") := .(lubridate::wday(date, week_start=1),
+                                               lubridate::isoweek(date),
+                                               lubridate::year(date))]
     all_dates[, year_diff := year - min(year)]
     all_dates[, week := week + year_diff * 52]
     # The first days before Monday in the new Year will be off,
@@ -25,7 +25,7 @@ get_calendar_dates <- function() {
     all_dates[, c('year_diff', 'year') := NULL]
 
     # Work out the week number with first months
-    all_dates[ wday == 1, month := month(date)]
+    all_dates[ wday == 1, month := lubridate::month(date)]
     all_dates
 }
 
@@ -523,13 +523,12 @@ sync <- function(session, con, cache_fn, auth) {
         # Iterate over each activity, adding to DB in turn
         num_added <- 0
         n_activities <- nrow(new_activities)
-        activity_indices <- 1:n_activities
         if (n_activities < 20) {
-            progress_update_indices <- activity_indices
+            increment <- 1
         } else {
-            increment <- floor(0.01 * n_activities)
-            progress_update_indices <- seq(1, n_activities, by=increment)
+            increment <- floor(0.05 * n_activities)
         }
+        progress_update_indices <- seq(1, n_activities, by=increment)
 
         for (i in 1:n_activities) {
             if (i %in% progress_update_indices) {
