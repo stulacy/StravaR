@@ -246,10 +246,11 @@ server <- function(input, output, session) {
                    date = as_date(start_time),
                    distance = round(distance, 1),
                    elevation = round(elevation),
-                   duration = as.period(duration(duration, units="secs")),
-                   dur_fmt = sprintf("%dh %dm %ds", hour(duration),
-                                     minute(duration),
-                                     round(second(duration))),
+                   duration = lubridate::as.period(lubridate::duration(duration, units="secs")),
+                   dur_fmt = sprintf("%dh %dm %ds", 
+                                     lubridate::hour(duration),
+                                     lubridate::minute(duration),
+                                     round(lubridate::second(duration))),
                    dur_fmt = gsub("0h ", "", dur_fmt)) |>
             arrange(desc(start_time)) |>
             select(
