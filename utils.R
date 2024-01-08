@@ -211,6 +211,7 @@ handle_export_archive <- function(archive, con) {
                 # Add activity_id
                 df_raw[, filename_id := this_filename_id ]
                 df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
+                setorder(df_raw, time)
 
                 # Create activity entry and upload the time-series data if doesn't exist
                 create_activities(
@@ -252,6 +253,7 @@ handle_export_archive <- function(archive, con) {
                 setnames(gpx_data, old=c('Time', 'Latitude', 'Longitude'), new=c('time', 'lat', 'lon'), skip_absent = TRUE)
                 # load activity_id and set to first column
                 gpx_data <- all_activities[gpx_data, .(lat, lon, time, activity_id), on=.(filename_id)]
+                setorder(gpx_data, time)
                 if (! "lat" %in% names(gpx_data)) gpx_data[, lat := NA]
                 if (! "lon" %in% names(gpx_data)) gpx_data[, lon := NA]
                 if (! "heartrate" %in% names(gpx_data)) gpx_data[, heartrate := NA]
