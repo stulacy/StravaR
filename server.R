@@ -378,7 +378,7 @@ server <- function(input, output, session) {
         # Make entry for every day as need to run equation everyday as time isn't
         # parameterised in it
         all_dates <- data.table(date=seq.Date(from=min(hrss$date), to=max(hrss$date), by=1))
-        hrss <- merge(hrss, all_dates, on='date', all.y=TRUE)
+        hrss <- merge(hrss, all_dates, by='date', all.y=TRUE)
         hrss[ is.na(hrss), hrss := 0 ]
         
         hrss[, c('Fitness', 'Fatigue', 'Form') := 0]
@@ -471,7 +471,7 @@ server <- function(input, output, session) {
     output$mileage_weekly <- renderPlotly({
         df <- mileage_df()
         all_dates <- data.table(date=seq.Date(from=min(df$date), to=max(df$date), by=1))
-        df <- merge(df, all_dates, on='date', all.y=TRUE)
+        df <- merge(df, all_dates, by='date', all.y=TRUE)
         df[, distance := ifelse(is.na(df$distance), 0, df$distance)]
         df <- df[, .(distance = sum(distance, na.rm=T)), by=.(date)]
         # Have date, start_time, distance, Year, Date, Distance, label
