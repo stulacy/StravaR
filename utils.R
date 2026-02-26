@@ -17,10 +17,10 @@ get_calendar_dates <- function() {
                                                lubridate::isoweek(date),
                                                lubridate::year(date))]
     all_dates[, year_diff := year - min(year)]
+    # Under the ISO8601 designation, the 53rd week in a year is referred to as week 1
+    # of the following year. Set the corresponding year to be the next year too
+    all_dates[, year_diff := ifelse(year_diff == 0 & month(date) == 12 & week == 1, 1, year_diff)]
     all_dates[, week := week + year_diff * 52]
-    # The first days before Monday in the new Year will be off,
-    # since technically they'll be week 52 and will add an additional 52
-    all_dates[ week == 104, week := 52]
     all_dates[, week := paste0("week_", week - min(week))]
     all_dates[, c('year_diff', 'year') := NULL]
 
@@ -414,8 +414,8 @@ get_recent_activities_meta <- function(auth, con) {
 
 # For each activity, get the associated stream
 get_stream <- function(id, auth) {
-    raw <- GET(sprintf("https://www.strava.com/api/v3/activities/%s/streams/heartrate,latlng", id),
-                  auth, query=list(key_by_type='true', series_type='time'))
+    raw <- GET(sprintf("https://www.strava.com/api/v3/activities/%s/streams", id),
+                  auth, query=list(key_by_type='true', keys="time,distance,heartrate,latlng"))
     if (raw$status_code != 200) {
         dt <- data.table(activity_id=numeric(), time_offset=numeric(), heartrate=numeric(), lat=numeric(), lon=numeric())
     } else {
