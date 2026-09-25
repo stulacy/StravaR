@@ -376,15 +376,27 @@ get_recent_activities_meta <- function(auth, con) {
     page_size <- 30
     i <- 1
     results <- list()
+    retries <- 0
     while (TRUE) {
         all_activities <- GET("https://www.strava.com/api/v3/athlete/activities", auth,
                               query=list(after=most_recent_activity, per_page=page_size,
                                          page=i))
         if (all_activities$status_code != 200) {
-            showNotification("Error occurred when trying to retrieve activities, try again later.",
-                             type="error", duration=3)
+            # Back off and retry a few times (rate limits are transient), then
+            # give up with nothing rather than looping forever or saving a
+            # partial page set.
+            retries <- retries + 1
+            if (retries > 3) {
+                showNotification(sprintf("Could not retrieve activities from Strava (HTTP %d), try again later.",
+                                         all_activities$status_code),
+                                 type="error", duration=10)
+                results <- list()
+                break
+            }
+            Sys.sleep(2^retries)
             next
         }
+        retries <- 0
         page_activities <- content(all_activities)
         results <- append(results, page_activities)
         if (length(page_activities) < page_size) break
