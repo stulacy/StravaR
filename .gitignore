@@ -13,3 +13,5 @@ plots/
 .httr-oauth
 TODO
 README.html
+.Renviron
+.DS_Store
