@@ -303,7 +303,15 @@ server <- function(input, output, session) {
         calendar_raw <- activities_calendar()
         df_wide <- calendar_raw$calendar
         all_dates <- calendar_raw$all_dates
-        month_breaks <- all_dates[wday == 1, head(.SD, 1L), by=month][, as.integer(gsub("week_", "", week))]
+        # A tick at the first week (Monday) of each month in the rolling
+        # 52-week window, labelled from its own date. The window starts and
+        # ends in the same month, so the first label and each January also
+        # carry the year.
+        month_starts <- all_dates[wday == 1][, ym := format(date, "%Y-%m")][, head(.SD, 1L), by=ym]
+        month_breaks <- as.integer(gsub("week_", "", month_starts$week))
+        month_labels <- ifelse(seq_len(nrow(month_starts)) == 1 | month(month_starts$date) == 1,
+                               format(month_starts$date, "%b '%y"),
+                               format(month_starts$date, "%b"))
         
         df_raw <- activities_summary() |> 
             filter(date >= min(all_dates$date)) |> 
@@ -334,10 +342,7 @@ server <- function(input, output, session) {
                               ticks="",
                               tickmode="array",
                               tickvals=month_breaks,
-                              ticktext=c("Jan", "Feb", "Mar",
-                                         "Apr", "May", "Jun",
-                                         "Jul", "Aug", "Sep",
-                                         "Oct", "Nov", "Dec")),
+                              ticktext=month_labels),
                    title=sprintf("%d %ss in the last year with an average of %dkm\n%d in the last week with an average of %dkm", 
                                  nrow(df_raw),
                                  tolower(paste(unique(df_raw$activity_type), collapse='+')),

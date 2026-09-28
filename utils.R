@@ -13,16 +13,11 @@ get_calendar_dates <- function() {
     days_til_sunday <- 7 - lubridate::wday(today(), week_start=1)
     first_day <- today() + days(days_til_sunday) - weeks(52) + days(1)
     all_dates <- data.table(date=seq.Date(from=first_day, to=today() + days(days_til_sunday), by="day"))
-    all_dates[, c("wday", "week", "year") := .(lubridate::wday(date, week_start=1),
-                                               lubridate::isoweek(date),
-                                               lubridate::year(date))]
-    all_dates[, year_diff := year - min(year)]
-    # Under the ISO8601 designation, the 53rd week in a year is referred to as week 1
-    # of the following year. Set the corresponding year to be the next year too
-    all_dates[, year_diff := ifelse(year_diff == 0 & month(date) == 12 & week == 1, 1, year_diff)]
-    all_dates[, week := week + year_diff * 52]
-    all_dates[, week := paste0("week_", week - min(week))]
-    all_dates[, c('year_diff', 'year') := NULL]
+    # Column = whole weeks since the window's first Monday, so always 0-51.
+    # (Numbering from ISO weeks + 52 per year broke in windows spanning a
+    # 53-week ISO year, such as 2026, leaving a gap in the columns.)
+    all_dates[, c("wday", "week") := .(lubridate::wday(date, week_start=1),
+                                       paste0("week_", as.integer(date - first_day) %/% 7L))]
 
     # Work out the week number with first months
     all_dates[ wday == 1, month := lubridate::month(date)]
