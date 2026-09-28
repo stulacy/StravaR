@@ -432,7 +432,21 @@ server <- function(input, output, session) {
                                                  as.character(Year),
                                                  NA_character_)),
             by=Year]
-        
+
+        # Each line only has points on days with activities, so it would stop
+        # at the year's last activity. Carry the total on to the end of the
+        # year -- or to today for the current year -- so every line ends where
+        # its year does.
+        this_year <- year(today())
+        year_ends <- df2[, .(Date = if (as.integer(as.character(Year[1])) == this_year)
+                                        as_datetime(sprintf("2000-%d-%d", month(today()), day(today())))
+                                    else as_datetime("2000-12-31"),
+                             Distance = max(Distance),
+                             last = max(Date)),
+                         by=Year][Date > last]
+        df2 <- rbind(df2, year_ends[, .(Year, Date, Distance)], fill=TRUE)
+        setorder(df2, Date)
+
         p <- plot_ly(x=~Date)
         for (group in unique(df2$Year)) {
             p <- p |> add_lines(y=~Distance, 
