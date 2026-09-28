@@ -595,7 +595,7 @@ server <- function(input, output, session) {
          subplot(p1, p2, p3, shareX = TRUE, nrows=3,
                       titleY=TRUE) |>
             layout(hovermode="x unified",
-                   xaxis=list(title="", 
+                   xaxis=list(title="", rangeselector=TRAINING_RANGE_BUTTONS,
                               range=c(today() - months(1), today())))
     })
     

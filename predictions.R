@@ -50,8 +50,8 @@ render_predictions_now <- function(model) {
     tagList(
         div(class = "pred-row", tiles),
         p(class = "pred-caption",
-          sprintf("Model %s, as of %s; latest run %s. Eight in ten races should fall inside the 80%% range.",
-                  x$tag, format(x$as_of, "%d %b %Y"), format(x$last_run, "%d %b %Y")),
+          sprintf("As of %s; latest run %s.",
+                  format(x$as_of, "%d %b %Y"), format(x$last_run, "%d %b %Y")),
           if (x$ess < x$n_draws / 2)
               strong(" The model has drifted from its fit: refit it in running-analysis and install a new bundle.")
           else NULL)
@@ -63,6 +63,11 @@ RANGE_BUTTONS <- list(buttons = list(
     list(count = 1, label = "1y", step = "year", stepmode = "backward"),
     list(count = 2, label = "2y", step = "year", stepmode = "backward"),
     list(step = "all", label = "All")))
+
+# The Training chart opens on the last month, so it also gets a button for that
+TRAINING_RANGE_BUTTONS <- list(buttons = c(
+    list(list(count = 1, label = "1m", step = "month", stepmode = "backward")),
+    RANGE_BUTTONS$buttons))
 
 # The history is smoothed (every run up to the model's fit) followed by the
 # filter's real-time estimates for runs since. The real-time part starts from
