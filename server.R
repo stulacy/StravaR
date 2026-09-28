@@ -165,9 +165,18 @@ server <- function(input, output, session) {
     
     
     observeEvent(input$archive_upload, {
-        handle_export_archive(input$archive_upload, con)
+        res <- handle_export_archive(input$archive_upload, con)
         activities_synced(activities_synced() + 1)
         removeModal()
+        showNotification(
+            sprintf("Imported %d new activit%s; %d already in the database were skipped%s%s.",
+                    res$new, ifelse(res$new == 1, "y", "ies"), res$already_stored,
+                    ifelse(res$failed > 0, sprintf("; %d failed to import and will be retried next time", res$failed), ""),
+                    ifelse(res$unmatched_files > 0,
+                           sprintf("; %d file%s not listed in activities.csv %s ignored",
+                                   res$unmatched_files, ifelse(res$unmatched_files == 1, "", "s"),
+                                   ifelse(res$unmatched_files == 1, "was", "were")), "")),
+            type = if (res$failed > 0) "warning" else "message", duration = 10)
     })
     
     

@@ -120,24 +120,48 @@ handle_export_archive <- function(archive, con) {
                                              activity_id = `Activity ID`,
                                              filename_id = gsub("\\..+", "", basename(Filename)),
                                              name = `Activity Name`,
-                                             start_time = lubridate::as_datetime(`Activity Date`, format="%b %d, %Y, %I:%M:%S %p"),
+                                             # "Jul 1, 2026, 12:32:13 PM" (UTC). mdy_hms, not a
+                                             # strptime format: %b and %p depend on the locale
+                                             # and silently gave NA start times in en_GB
+                                             start_time = lubridate::mdy_hms(`Activity Date`, tz="UTC"),
                                              duration = `Elapsed Time`,
                                              distance = `Distance`,
                                              elevation = `Elevation Gain`)]
 
+        # Which activities are new? Checked once, up front, against the IDs
+        # already stored, so files for activities already in the database are
+        # never unzipped or parsed. IDs are compared as text: Strava's 11-digit
+        # IDs arrive from fread as integer64 and from DuckDB as doubles.
+        existing_ids <- tbl(con, "activities") |> pull(activity_id) |> as.character()
+        all_activities[, is_new := !as.character(activity_id) %in% existing_ids]
+        new_file_ids <- all_activities[is_new == TRUE & filename_id != "", filename_id]
+        import_summary <- list(
+            new = 0L, failed = 0L,
+            already_stored = sum(!all_activities$is_new),
+            # activities.csv rows with no activity file (manual entries etc.)
+            no_file = sum(all_activities$is_new & all_activities$filename_id == ""),
+            unmatched_files = 0L
+        )
+
         # Unzip GPX files - shouldn't ever have any but worth accounting for possibility
         gpx_gz_files <- list.files(file.path(temp_dir, "activities"),
                                 pattern="*.gpx.gz$", full.names=TRUE)
+        import_summary$unmatched_files <- sum(!strip_ext(gpx_gz_files, 2) %in% all_activities$filename_id)
+        gpx_gz_files <- gpx_gz_files[strip_ext(gpx_gz_files, 2) %in% new_file_ids]
         dummy <- lapply(gpx_gz_files, R.utils::gunzip, overwrite=TRUE, remove=FALSE)
 
-        # Count the number of GPX and FIT files
+        # Count the number of GPX and FIT files -- only those of new activities
         fit_files <- list.files(file.path(temp_dir, "activities"),
                                 pattern="*.fit.gz$", full.names=TRUE)
+        fit_ids <- strip_ext(fit_files, 2)
+        import_summary$unmatched_files <- import_summary$unmatched_files +
+            sum(!fit_ids %in% all_activities$filename_id)
+        fit_files <- fit_files[fit_ids %in% new_file_ids]
  
         # Setup values for progress bar updates
         n_fit_files <- length(fit_files)
 
-        fit_files_indices <- 1:n_fit_files
+        fit_files_indices <- seq_len(n_fit_files)
         if (n_fit_files < 20) {
             progress_update_indices_fit <- fit_files_indices
         } else {
@@ -148,10 +172,14 @@ handle_export_archive <- function(archive, con) {
         # convert GPX to CSV using gpsbabel
         gpx_files <- list.files(file.path(temp_dir, "activities"),
                                 pattern="*.gpx$", full.names=TRUE)
+        gpx_ids <- strip_ext(gpx_files, 1)
+        import_summary$unmatched_files <- import_summary$unmatched_files +
+            sum(!gpx_ids %in% all_activities$filename_id)
+        gpx_files <- gpx_files[gpx_ids %in% new_file_ids]
 
         # Setup values for progress bar updates
         n_gpx_files <- length(gpx_files)
-        gpx_files_indices <- 1:n_gpx_files
+        gpx_files_indices <- seq_len(n_gpx_files)
         if (n_gpx_files < 20) {
             progress_update_indices_gpx <- gpx_files_indices
         } else {
@@ -174,12 +202,9 @@ handle_export_archive <- function(archive, con) {
                 )
             }
 
-            # Unzip fit file and read into R if doesn't exist in DB
-            this_filename_id <- basename(tools::file_path_sans_ext(tools::file_path_sans_ext(fn)))
-            this_activity_id <- all_activities |>
-                                    filter(filename_id == this_filename_id) |>
-                                    pull(activity_id)
-            if (tbl(con, "activities") |> filter(activity_id == this_activity_id) |> count() |> pull(n) > 0) next
+            # Unzip fit file and read into R (only new activities reach here)
+            this_filename_id <- strip_ext(fn, 2)
+            this_activity_id <- all_activities[filename_id == this_filename_id, activity_id]
             R.utils::gunzip(fn, overwrite=TRUE, remove=FALSE)
             bn <- tools::file_path_sans_ext(fn)
 
@@ -208,14 +233,18 @@ handle_export_archive <- function(archive, con) {
                 df_raw <- all_activities[df_raw, .(heartrate, lat, lon, time, activity_id), on=.(filename_id)]
                 setorder(df_raw, time)
 
-                # Create activity entry and upload the time-series data if doesn't exist
-                create_activities(
-                    all_activities[activity_id == this_activity_id, .(activity_type, activity_id, name, start_time, duration, distance, elevation) ],
-                    con
-                )
-                upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)], con)
+                # Create the activity and upload its time series together, so a
+                # failure leaves nothing behind and the next import retries it
+                dbWithTransaction(con, {
+                    create_activities(
+                        all_activities[activity_id == this_activity_id, .(activity_type, activity_id, name, start_time, duration, distance, elevation) ],
+                        con
+                    )
+                    upload_activities(df_raw[, .(activity_id, time, heartrate, lat, lon)], con)
+                })
+                import_summary$new <- import_summary$new + 1L
             },
-            error=function(e) {}
+            error=function(e) { import_summary$failed <<- import_summary$failed + 1L }
             )
         }
 
@@ -233,12 +262,9 @@ handle_export_archive <- function(archive, con) {
                 )
             }
 
-            # Only read file if doesn't exist in DB
-            this_filename_id <- basename(tools::file_path_sans_ext(fn))
-            this_activity_id <- all_activities |>
-                                    filter(filename_id == this_filename_id) |>
-                                    pull(activity_id)
-            if (tbl(con, "activities") |> filter(activity_id == this_activity_id) |> count() |> pull(n) > 0) next
+            # Only new activities reach here
+            this_filename_id <- strip_ext(fn, 1)
+            this_activity_id <- all_activities[filename_id == this_filename_id, activity_id]
 
             # Read gpx file into R
             tryCatch({
@@ -254,16 +280,29 @@ handle_export_archive <- function(archive, con) {
                 if (! "heartrate" %in% names(gpx_data)) gpx_data[, heartrate := NA]
                 setcolorder(gpx_data, c('activity_id', 'time', 'heartrate', 'lat', 'lon'))
 
-                create_activities(
-                    all_activities |> filter(activity_id == this_activity_id) |> select(-filename_id),
-                    con
-                )
-                upload_activities(gpx_data[, .(activity_id, time, heartrate, lat, lon)], con)
+                dbWithTransaction(con, {
+                    create_activities(
+                        all_activities[activity_id == this_activity_id,
+                                       .(activity_type, activity_id, name, start_time, duration, distance, elevation)],
+                        con
+                    )
+                    upload_activities(gpx_data[, .(activity_id, time, heartrate, lat, lon)], con)
+                })
+                import_summary$new <- import_summary$new + 1L
             },
-              error=function(e) {}
+              error=function(e) { import_summary$failed <<- import_summary$failed + 1L }
             )
         }
     })
+    import_summary
+}
+
+# File name without its directory and last `n` extensions:
+# ".../123.fit.gz" -> "123" with n = 2
+strip_ext <- function(path, n) {
+    out <- basename(path)
+    for (k in seq_len(n)) out <- tools::file_path_sans_ext(out)
+    out
 }
 
 insert_or_update_athlete <- function(settings, con) {
