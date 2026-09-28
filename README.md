@@ -27,6 +27,8 @@ Finally, when I haven't got a specific race planned, my main motivation comes fr
 
 ![screenshot of routes](github_resources/routes.png)
 
+The **Race predictions** tab shows a statistical estimate of running fitness over time, the race times it implies for 5k, 10k, 10 mile, half marathon and marathon, and today's predicted times with 80% ranges. The model behind it is fitted offline (by MCMC, in a separate analysis repo) and arrives as a single file, `model/fitness_model.rds`. After that, the app keeps it up to date itself: when it starts and after every sync, `fitness_update.R` feeds each new run through the model's online filter (`fitness_filter.R`), which takes a fraction of a second per run. Runs added since the fit appear dotted on the charts, as real-time estimates. If the new runs drift far enough from what the fitted parameters expect, the tab says it is time to refit the model and install a new file. Without the file, the tab explains how to create it and the rest of the app is unaffected.
+
 ### Installation
 
 1.  Clone this repository to your computer (within RStudio, File -\> New Project -\> Version Control -\> Git, then enter `https://github.com/stulacy/StravaR.git` as the Repository URL)

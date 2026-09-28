@@ -13,6 +13,9 @@ library(sf)
 library(plotly)
 library(httr)
 source("utils.R")
+source("fitness_filter.R")
+source("fitness_update.R")
+source("predictions.R")
 
 PORT <- 8100
 options(shiny.port=PORT)
@@ -596,6 +599,48 @@ server <- function(input, output, session) {
                               range=c(today() - months(1), today())))
     })
     
+    # Race predictions: the fitness model is updated here, on this app's own
+    # connection, when the app starts and after every sync (no polling)
+    fitness_model <- reactiveVal(load_fitness_model())
+
+    run_fitness_update <- function() {
+        m <- isolate(fitness_model())
+        if (is.null(m)) return(invisible())
+        withProgress(message = "Updating fitness model", value = 0, {
+            res <- update_fitness_model(m, con, progress = function(i, n)
+                setProgress(i / n, detail = sprintf("run %d of %d", i, n)))
+        })
+        if (res$processed + res$skipped > 0) {
+            fitness_model(res$model)
+            showNotification(sprintf("Fitness model updated with %d new run%s%s.",
+                                     res$processed, ifelse(res$processed == 1, "", "s"),
+                                     ifelse(res$skipped > 0,
+                                            sprintf(" (%d older run%s left for the next refit)",
+                                                    res$skipped, ifelse(res$skipped == 1, "", "s")),
+                                            "")),
+                             type = "message", duration = 5)
+        }
+    }
+    # once at start-up (runs synced by an earlier session), then after each sync
+    observeEvent(TRUE, run_fitness_update(), once = TRUE)
+    observeEvent(activities_synced(), run_fitness_update(), ignoreInit = TRUE)
+
+    output$predictions_now <- renderUI({
+        render_predictions_now(fitness_model())
+    })
+
+    output$fitness_model <- renderPlotly({
+        m <- fitness_model()
+        validate(need(!is.null(m), "No fitness model installed (see above)."))
+        plot_fitness_model(m)
+    })
+
+    output$race_times <- renderPlotly({
+        m <- fitness_model()
+        validate(need(!is.null(m), "No fitness model installed (see above)."))
+        plot_race_times(m, input$race_distance)
+    })
+
     output$stravaConnectPlaceholder <- renderUI({
         if (is.null(AUTH_HEADER)) {
             CONNECT_TO_STRAVA_BUTTON

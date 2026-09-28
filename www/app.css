@@ -23,3 +23,38 @@ ul.navbar-nav {
     position: absolute;
     bottom: 0px;
 }
+/* Race predictions tab */
+.pred-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.pred-tile {
+    flex: 1 1 150px;
+    background: #fef5e7;
+    border-left: 5px solid #f39c12;
+    border-radius: 3px;
+    padding: 10px 14px;
+}
+.pred-dist {
+    font-size: 13px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.pred-time {
+    font-size: 28px;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+    color: #333;
+}
+.pred-range {
+    font-size: 12px;
+    color: #777;
+    font-variant-numeric: tabular-nums;
+}
+.pred-caption {
+    margin: 10px 0 0 0;
+    color: #777;
+    font-size: 12px;
+}

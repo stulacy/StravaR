@@ -20,6 +20,7 @@ ui <- dashboardPage(
             menuItem("Activities", tabName = "data", icon = icon("dashboard")),
             menuItem("Mileage", tabName = "mileage", icon = icon("chart-line")),
             menuItem("Training", tabName = "fitness", icon = icon("heart")),
+            menuItem("Race predictions", tabName = "predictions", icon = icon("stopwatch")),
             menuItem("Routes", tabName = "routes", icon = icon("map")),
             uiOutput("activity_type_select_wrapper"),
             img(src="resources/api_logo_pwrdBy_strava_stack_light.png", class="powered-by-logo")
@@ -74,6 +75,33 @@ ui <- dashboardPage(
                     fluidRow(
                         box(title="Training history",
                             withSpinner(plotlyOutput("training")),
+                            status="success",
+                            solidHeader = TRUE,
+                            width=12)
+                    )
+            ),
+            tabItem(tabName = "predictions",
+                    fluidRow(
+                        box(title="Current predicted race times",
+                            uiOutput("predictions_now"),
+                            status="warning",
+                            solidHeader = TRUE,
+                            width=12)
+                    ),
+                    fluidRow(
+                        box(title="Fitness",
+                            withSpinner(plotlyOutput("fitness_model", height=320)),
+                            status="success",
+                            solidHeader = TRUE,
+                            width=12)
+                    ),
+                    fluidRow(
+                        box(title="Expected race time",
+                            radioButtons("race_distance", label=NULL,
+                                         choices=c("5k", "10k", "10 mile",
+                                                   "Half marathon", "Marathon"),
+                                         selected="5k", inline=TRUE),
+                            withSpinner(plotlyOutput("race_times", height=360)),
                             status="success",
                             solidHeader = TRUE,
                             width=12)
